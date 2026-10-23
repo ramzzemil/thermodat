@@ -572,6 +572,30 @@
             margin-top: 12px
         }
 
+
+        .program-table {
+            width: 100%;
+            border-collapse: collapse;
+            min-width: 760px;
+        }
+
+        .program-table th, .program-table td {
+            padding: 8px;
+            border-bottom: 1px solid var(--line);
+            text-align: left;
+        }
+
+        .program-table th {
+            color: var(--muted);
+            font-size: 11px;
+            font-weight: 500;
+        }
+
+        .program-table input, .program-table select {
+            width: 100%;
+            min-width: 75px;
+        }
+
         @media (max-width: 900px) {
             .tiles {
                 grid-template-columns:repeat(2, minmax(0, 1fr))
@@ -657,7 +681,8 @@
     <button class="tab" data-tab="plot"><span class="k">2</span>Plot</button>
     <button class="tab" data-tab="terminal"><span class="k">3</span>Terminal</button>
     <button class="tab" data-tab="registers"><span class="k">4</span>Registers</button>
-    <button class="tab" data-tab="connection"><span class="k">5</span>Connection</button>
+    <button class="tab" data-tab="program"><span class="k">5</span>Experiment program</button>
+    <button class="tab" data-tab="connection"><span class="k">6</span>Connection</button>
 </nav>
 
 <main>
@@ -770,7 +795,8 @@
             <div class="plot-wrap">
                 <canvas id="plot-canvas-large"></canvas>
             </div>
-            <div class="legend"><span class="accent">●</span> Channel 0 temperature (register 0000)</div>
+            <div class="legend"><span class="accent">●</span> Measured temperature <span class="blue">┄</span> Loaded
+                program target profile <span id="chart-regulation-state">Regulation: unknown</span></div>
         </div>
         <div class="grid-2">
             <div class="card">
@@ -938,6 +964,78 @@
         </div>
     </section>
 
+
+    <section class="panel" id="tab-program">
+        <div class="grid-2">
+            <div class="card">
+                <div class="card-head"><h2>Experiment program editor</h2><span
+                        class="chip">10 steps · indices 0–9</span></div>
+                <div class="form-grid">
+                    <label class="field">Thermodat program number (1–80)<input id="program-number" type="number" min="1"
+                                                                               max="80" value="1"></label>
+                    <label class="field">File name<input id="program-name" maxlength="48" value="experiment-01"
+                                                         spellcheck="false"></label>
+                    <label class="field full">Programs saved on ESP32
+                        <div class="row"><select id="saved-programs" style="flex:1">
+                            <option value="">Loading list…</option>
+                        </select>
+                            <button class="btn" id="refresh-program-list">Refresh</button>
+                            <button class="btn" id="load-program-file">Load</button>
+                        </div>
+                    </label>
+                </div>
+                <div class="row wrap" style="margin-top:12px">
+                    <button class="btn primary" id="save-program-file">Save to ESP32</button>
+                    <button class="btn" id="new-program">Clear editor</button>
+                    <label class="checkline"><input type="checkbox" id="program-armed"> Application is running this
+                        program (gate temperature polling)</label>
+                </div>
+                <p class="hint">Saving stores a JSON file in ESP32 LittleFS; it does not write to Thermodat or start
+                    heating.</p>
+            </div>
+            <div class="card">
+                <div class="card-head"><h2>Thermodat verification</h2><span class="chip" id="program-match-chip">Not checked</span>
+                </div>
+                <div class="row wrap"><span class="chip" id="program-device-state">Regulation: unknown</span><span
+                        class="chip" id="program-device-number">Device program: —</span><span class="chip"
+                                                                                              id="program-step-count">0 active steps</span>
+                </div>
+                <div class="row wrap" style="margin-top:12px">
+                    <button class="btn" id="read-device-program">Read / compare</button>
+                    <button class="btn primary" id="sync-device-program">Write differences only</button>
+                </div>
+                <p class="hint">For each active step, reads 0162–0165 first. During sync, only register values that
+                    differ are written, then verified by reading again. Selection registers 0160/0161 select the program
+                    and step.</p>
+                <div class="note">This tab does not start or resume regulation. Confirm the controller is in program
+                    mode and review the profile before running a real experiment.
+                </div>
+                <div id="program-sync-log" class="hint" style="margin-top:10px;white-space:pre-wrap">No comparison
+                    yet.
+                </div>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-head"><h2>Steps</h2><span class="hint">Target: 0.1 °C units. Ramp rate: 0.1 °C/hour. Hold duration: minutes.</span>
+            </div>
+            <div class="table-scroll">
+                <table class="program-table">
+                    <thead>
+                    <tr>
+                        <th>Step</th>
+                        <th>Type</th>
+                        <th>Ramp / hold / jump value</th>
+                        <th>Target °C</th>
+                        <th>Transition</th>
+                        <th>Active</th>
+                    </tr>
+                    </thead>
+                    <tbody id="program-steps"></tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+
     <section class="panel" id="tab-connection">
         <div class="grid-2">
             <div class="card">
@@ -1023,6 +1121,10 @@
         let chartWindow = 600000;
 
         const samples = [];
+        let programStartTime = null;
+        let latestRegulationState = null;
+        let workingProgram = null;
+        let programOperationBusy = false;
         const RESPONSE_TIMEOUT_MS = 1800;
 
         function log(message, kind = 'muted') {
@@ -1124,7 +1226,7 @@
             socket.onmessage = event => handleMessage(String(event.data));
         }
 
-        function sendPayload(payload, description = 'Manual command') {
+        function sendPayload(payload, description = 'Manual command', onResult = null) {
             payload = String(payload).replace(/[\s:]/g, '').toUpperCase();
 
             if (!/^[0-9A-F]+$/.test(payload) || payload.length % 2 !== 0) {
@@ -1179,7 +1281,8 @@
                 unit,
                 fn,
                 address: payload.slice(4, 8),
-                sentAt: 0
+                sentAt: 0,
+                onResult
             });
 
             pumpQueue();
@@ -1224,6 +1327,7 @@
 
                 activeRequest = null;
                 responseTimeout = null;
+                if (request.onResult) request.onResult({ok: false, error: 'timeout'});
                 pumpQueue();
             }, RESPONSE_TIMEOUT_MS);
         }
@@ -1246,7 +1350,11 @@
                 updateCounters();
                 log(message, 'err');
 
-                if (activeRequest) finishActiveRequest();
+                if (activeRequest) {
+                    const failedRequest = activeRequest;
+                    finishActiveRequest();
+                    if (failedRequest.onResult) failedRequest.onResult({ok: false, error: message});
+                }
                 return;
             }
 
@@ -1306,7 +1414,21 @@
 
                 // Parse against this specific request, not whichever command was most recently clicked.
                 parseResponse(frame, request);
+                let result = {ok: false, values: [], frame};
+                if (responseFn === 6) {
+                    result = {ok: true, values: [], frame};
+                } else if (!(responseFn & 0x80)) {
+                    const byteCount = parseInt(body.slice(4, 6), 16);
+                    const vals = [];
+                    if (Number.isFinite(byteCount) && body.length === 8 + byteCount * 2) {
+                        for (let i = 0; i < byteCount; i += 2) {
+                            vals.push(parseInt(body.slice(6 + i * 2, 10 + i * 2), 16));
+                        }
+                        if (vals.every(Number.isFinite)) result = {ok: true, values: vals, frame};
+                    }
+                }
                 finishActiveRequest();
+                if (request.onResult) request.onResult(result);
                 return;
             }
 
@@ -1398,6 +1520,9 @@
                 $('current-run').textContent = state;
                 $('state-run').textContent = state;
                 $('reg-run').textContent = state;
+                $('chart-regulation-state').textContent = 'Regulation: ' + state;
+                $('program-device-state').textContent = 'Regulation: ' + state;
+                latestRegulationState = value;
             } else if (reqAddr === '0030' && values.length === 1) {
                 $('reg-0030').textContent =
                     '0x' + values[0].toString(16).toUpperCase().padStart(4, '0');
@@ -1469,6 +1594,18 @@
                         pointHoverRadius: 4,
                         fill: true,
                         tension: 0.18
+                    }, {
+                        label: 'Loaded program target profile',
+                        data: [],
+                        parsing: false,
+                        borderColor: '#80aaff',
+                        backgroundColor: 'transparent',
+                        borderWidth: 2,
+                        borderDash: [6, 4],
+                        pointRadius: 3,
+                        pointHoverRadius: 5,
+                        fill: false,
+                        tension: 0
                     }]
                 },
                 options: {
@@ -1481,7 +1618,7 @@
                         legend: {display: false},
                         tooltip: {
                             callbacks: {
-                                title: function(items) {
+                                title: function (items) {
                                     const value = items[0].parsed.x;
                                     const date = new Date(value);
 
@@ -1538,9 +1675,10 @@
 
         function updateCharts() {
             const data = visibleSamples();
-
+            const profile = buildProgramProfile();
             charts.forEach(chart => {
                 chart.data.datasets[0].data = data;
+                if (chart.data.datasets[1]) chart.data.datasets[1].data = profile;
                 chart.update('none');
             });
         }
@@ -1696,6 +1834,12 @@
             const payload = '04060180' +
                 value.toString(16).toUpperCase().padStart(4, '0');
 
+            if (value === 0) {
+                programStartTime = null;
+            } else if (value === 1) {
+                programStartTime = Date.now();
+            }
+
             sendPayload(
                 payload,
                 'regulation ' + (value === 0 ? 'OFF' : value === 1 ? 'ON' : 'PAUSE')
@@ -1722,20 +1866,382 @@
                     Math.max(1200, Number($('poll-interval').value) || 1500)
                 );
 
-                // First read starts immediately; subsequent reads only queue when idle.
-                readRegister('0000');
-
+                // Poll controller state too. The optional program gate prevents temperature
+                // reads while regulation is stopped/paused only when explicitly enabled.
                 pollTimer = setInterval(() => {
-                    if (!activeRequest && requestQueue.length === 0) {
-                        readRegister('0000');
-                    }
+                    if (!activeRequest && requestQueue.length === 0) pollOnce();
                 }, period);
-
-                log('Polling temperature register 0000 every ' + period + ' ms', 'muted');
+                pollOnce();
+                log('Polling controller state every ' + period + ' ms', 'muted');
             } else {
                 log('Polling stopped', 'muted');
             }
         });
+
+
+        // Experiment-program UI. ESP32 firmware must expose:
+        // GET /api/programs -> {"programs":["experiment-01", ...]}
+        // GET /api/program?name=... -> saved JSON program
+        // POST /api/program with JSON body -> save JSON under LittleFS.
+        const PROGRAM_API = '/api';
+
+        const STEP_TYPES = [
+            [0, '0 · Heat/cool ramp'], [1, '1 · Hold'], [2, '2 · Jump'],
+            [3, '3 · Stop'], [4, '4 · Constant power'], [5, '5 · Heating'], [6, '6 · Cooling']
+        ];
+
+        function defaultStep(active = false) {
+            return {type: 0, value: 100, target: 250, transition: 0, active};
+        }
+
+        function createEmptyProgram() {
+            return {
+                name: $('program-name').value.trim() || 'experiment-01',
+                programNumber: Math.min(80, Math.max(1, Number($('program-number').value) || 1)),
+                steps: Array.from({length: 10}, (_, i) => defaultStep(i === 0))
+            };
+        }
+
+        function renderProgramSteps() {
+            if (!workingProgram) workingProgram = createEmptyProgram();
+            workingProgram.steps = Array.from({length: 10}, (_, i) =>
+                ({...defaultStep(i === 0), ...(workingProgram.steps?.[i] || {})}));
+            const tbody = $('program-steps');
+            tbody.textContent = '';
+            workingProgram.steps.forEach((step, i) => {
+                const tr = document.createElement('tr');
+                const types = STEP_TYPES.map(([v, label]) =>
+                    `<option value="${v}" ${Number(step.type) === v ? 'selected' : ''}>${label}</option>`).join('');
+                tr.innerHTML = `
+                    <td>${i + 1} <span class="hint">(idx ${i})</span></td>
+                    <td><select data-step="${i}" data-key="type">${types}</select></td>
+                    <td><input type="number" data-step="${i}" data-key="value" min="0" max="65535" step="1" value="${Number(step.value)}"></td>
+                    <td><input type="number" data-step="${i}" data-key="target" min="-270" max="2500" step="0.1" value="${(Number(step.target) / 10).toFixed(1)}"></td>
+                    <td><select data-step="${i}" data-key="transition">
+                        <option value="0" ${Number(step.transition) === 0 ? 'selected' : ''}>0 · Automatic</option>
+                        <option value="1" ${Number(step.transition) === 1 ? 'selected' : ''}>1 · Manual</option>
+                        <option value="2" ${Number(step.transition) === 2 ? 'selected' : ''}>2 · Measured temp</option>
+                    </select></td>
+                    <td><input type="checkbox" data-step="${i}" data-key="active" ${step.active ? 'checked' : ''} aria-label="Step ${i + 1} active"></td>`;
+                tbody.appendChild(tr);
+            });
+            tbody.querySelectorAll('[data-step][data-key]').forEach(input => {
+                input.addEventListener('change', () => {
+                    const i = Number(input.dataset.step), key = input.dataset.key;
+                    if (key === 'active') workingProgram.steps[i][key] = input.checked;
+                    else if (key === 'target') workingProgram.steps[i][key] = Math.round(Number(input.value) * 10);
+                    else workingProgram.steps[i][key] = Number(input.value);
+                    workingProgram.name = $('program-name').value.trim();
+                    workingProgram.programNumber = Number($('program-number').value);
+                    updateProgramSummary();
+                    updateCharts();
+                });
+            });
+            updateProgramSummary();
+            updateCharts();
+        }
+
+        function updateProgramSummary() {
+            if (!workingProgram) return;
+            $('program-step-count').textContent = workingProgram.steps.filter(x => x.active).length + ' active steps';
+            $('program-device-number').textContent = 'Device program: ' + workingProgram.programNumber;
+        }
+
+
+        function buildProgramProfile() {
+            if (!workingProgram || programStartTime === null) {
+                return [];
+            }
+
+            const activeSteps = workingProgram.steps.filter(step => step.active);
+            if (activeSteps.length === 0) {
+                return [];
+            }
+
+            let time = programStartTime;
+
+            // Use the most recent measured temperature as the starting point.
+            let previous = samples.length
+                ? samples[samples.length - 1].y
+                : Number(activeSteps[0].target) / 10;
+
+            const points = [{x: time, y: previous}];
+
+            for (const step of activeSteps) {
+                const type = Number(step.type);
+                const target = Number(step.target) / 10;
+                const value = Number(step.value);
+
+                // Stop or jump ends this simple projected profile.
+                if (type === 2 || type === 3) {
+                    break;
+                }
+
+                if (type === 1) {
+                    // Hold: remain at the current temperature for value minutes.
+                    time += Math.max(1, value || 1) * 60000;
+                    points.push({x: time, y: previous});
+                } else if ([0, 5, 6].includes(type)) {
+                    // Ramp: value is assumed to be in 0.1 °C/hour units.
+                    const rate = value * 0.1;
+                    const duration = rate > 0
+                        ? Math.abs(target - previous) / rate * 3600000
+                        : 1000;
+
+                    time += Math.max(1000, duration);
+                    points.push({x: time, y: target});
+                    previous = target;
+                } else {
+                    // Unknown step type: avoid inventing a duration.
+                    break;
+                }
+            }
+
+            return points;
+        }
+
+
+        function toRawHex(value) {
+            let n = Number(value);
+            if (n < 0) n += 65536;
+            return (n & 0xffff).toString(16).toUpperCase().padStart(4, '0');
+        }
+
+        function readRegisterAsync(address) {
+            return new Promise(resolve => {
+                const ok = sendPayload('0403' + address.toUpperCase().padStart(4, '0') + '0001',
+                    'program read ' + address, result => resolve(
+                        result.ok && result.values.length === 1
+                            ? {ok: true, value: result.values[0]} : {
+                                ok: false,
+                                error: result.error || 'bad response'
+                            }));
+                if (!ok) resolve({ok: false, error: 'request rejected'});
+            });
+        }
+
+        function writeRegisterAsync(address, value) {
+            return new Promise(resolve => {
+                const ok = sendPayload('0406' + address.toUpperCase().padStart(4, '0') + toRawHex(value),
+                    'program write ' + address + '=' + value, result => resolve(!!result.ok));
+                if (!ok) resolve(false);
+            });
+        }
+
+        function programLog(message) {
+            const el = $('program-sync-log');
+            el.textContent = (el.textContent ? el.textContent + '\n' : '') + message;
+            log('[Program] ' + message, 'muted');
+        }
+
+        function activeSteps() {
+            return workingProgram.steps.map((step, index) => ({...step, index})).filter(step => step.active);
+        }
+
+        function validateProgram() {
+            if (!workingProgram) return 'No program in the editor.';
+            if (!Number.isInteger(Number(workingProgram.programNumber)) || workingProgram.programNumber < 1 || workingProgram.programNumber > 80)
+                return 'Program number must be 1–80.';
+            const steps = activeSteps();
+            if (!steps.length) return 'Enable at least one step.';
+            let foundInactive = false;
+            for (const row of workingProgram.steps) {
+                if (!row.active) foundInactive = true;
+                else if (foundInactive) return 'Active steps must be consecutive from Step 1; disable all steps after the first inactive step.';
+            }
+            for (const step of steps) {
+                if (![0, 1, 2, 3, 4, 5, 6].includes(Number(step.type))) return 'Invalid step type at step ' + (step.index + 1);
+                if (!Number.isInteger(Number(step.value)) || step.value < 0 || step.value > 65535) return 'Invalid step value at step ' + (step.index + 1);
+                if (!Number.isInteger(Number(step.target)) || step.target < -2700 || step.target > 25000) return 'Invalid target temperature at step ' + (step.index + 1);
+                if (![0, 1, 2].includes(Number(step.transition))) return 'Invalid transition at step ' + (step.index + 1);
+            }
+            return null;
+        }
+
+        async function refreshProgramList() {
+            const select = $('saved-programs');
+            select.innerHTML = '<option value="">Loading…</option>';
+            try {
+                const response = await fetch(PROGRAM_API + '/programs', {cache: 'no-store'});
+                if (!response.ok) throw new Error('HTTP ' + response.status);
+                const data = await response.json();
+                const names = Array.isArray(data) ? data : data.programs;
+                select.textContent = '';
+                (names || []).forEach(name => {
+                    const option = document.createElement('option');
+                    option.value = String(name);
+                    option.textContent = String(name);
+                    select.appendChild(option);
+                });
+                if (!select.options.length) select.innerHTML = '<option value="">No saved programs</option>';
+            } catch (e) {
+                select.innerHTML = '<option value="">Storage API unavailable</option>';
+                programLog('Could not list ESP32 files: ' + e.message + '. ESP32 firmware API is required.');
+            }
+        }
+
+        async function saveProgramFile() {
+            const error = validateProgram();
+            if (error) {
+                programLog('Save blocked: ' + error);
+                return;
+            }
+            const name = $('program-name').value.trim();
+            if (!/^[A-Za-z0-9_-]{1,48}$/.test(name)) {
+                programLog('File name must contain 1–48 letters, digits, underscores or hyphens.');
+                return;
+            }
+            const body = {
+                name, programNumber: Number(workingProgram.programNumber),
+                steps: workingProgram.steps.map(x => ({
+                    type: Number(x.type), value: Number(x.value), target: Number(x.target),
+                    transition: Number(x.transition), active: !!x.active
+                }))
+            };
+            try {
+                const response = await fetch(PROGRAM_API + '/program', {
+                    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+                });
+                if (!response.ok) throw new Error('HTTP ' + response.status);
+                programLog('Saved "' + name + '" in ESP32 LittleFS.');
+                await refreshProgramList();
+                $('saved-programs').value = name;
+            } catch (e) {
+                programLog('Save failed: ' + e.message + '. Firmware must implement POST /api/program.');
+            }
+        }
+
+        async function loadProgramFile() {
+            const name = $('saved-programs').value;
+            if (!name) {
+                programLog('Select a saved program first.');
+                return;
+            }
+            try {
+                const response = await fetch(PROGRAM_API + '/program?name=' + encodeURIComponent(name), {cache: 'no-store'});
+                if (!response.ok) throw new Error('HTTP ' + response.status);
+                const data = await response.json();
+                if (!Array.isArray(data.steps)) throw new Error('invalid program file');
+                workingProgram = {
+                    name: data.name || name, programNumber: Number(data.programNumber) || 1,
+                    steps: Array.from({length: 10}, (_, i) => ({...defaultStep(i === 0), ...(data.steps[i] || {})}))
+                };
+                $('program-name').value = workingProgram.name;
+                $('program-number').value = workingProgram.programNumber;
+                renderProgramSteps();
+                programLog('Loaded "' + name + '" into browser working memory; controller unchanged.');
+            } catch (e) {
+                programLog('Load failed: ' + e.message + '. Firmware must implement GET /api/program?name=…');
+            }
+        }
+
+        async function compareOrSyncProgram(doSync) {
+            if (programOperationBusy) return;
+            const error = validateProgram();
+            if (error) {
+                programLog('Operation blocked: ' + error);
+                return;
+            }
+            if (doSync && !$('allow-writes').checked) {
+                programLog('Sync blocked: enable the write-safety acknowledgement on Dashboard first.');
+                return;
+            }
+            programOperationBusy = true;
+            $('read-device-program').disabled = $('sync-device-program').disabled = true;
+            $('program-match-chip').textContent = doSync ? 'Syncing…' : 'Reading…';
+            $('program-sync-log').textContent = '';
+            try {
+                const programNo = Number(workingProgram.programNumber) - 1;
+                if (!(await writeRegisterAsync('0160', programNo))) throw new Error('could not select program via 0160');
+                let allMatch = true, writes = 0;
+                const stepsToCompare = activeSteps();
+                const firstInactive = workingProgram.steps.findIndex(x => !x.active);
+                // Put a real Stop step at the first disabled row so an old longer
+                // program cannot continue through stale steps left in the controller.
+                if (firstInactive >= 0) {
+                    stepsToCompare.push({
+                        ...defaultStep(false),
+                        type: 3,
+                        index: firstInactive,
+                        active: true,
+                        _terminator: true
+                    });
+                }
+                for (const step of stepsToCompare) {
+                    const i = step.index;
+                    if (!(await writeRegisterAsync('0161', i))) throw new Error('could not select step ' + (i + 1));
+                    const expected = {'0162': Number(step.type)};
+                    const type = Number(step.type);
+                    if (!step._terminator && type !== 3) expected['0163'] = Number(step.value);
+                    if (!step._terminator && type !== 2 && type !== 3) expected['0164'] = Number(step.target);
+                    if (!step._terminator && [0, 1, 4, 5, 6].includes(type)) expected['0165'] = Number(step.transition);
+                    const actual = {};
+                    for (const address of Object.keys(expected)) {
+                        const r = await readRegisterAsync(address);
+                        if (!r.ok) throw new Error('read failed for ' + address + ' at step ' + (i + 1));
+                        actual[address] = r.value;
+                    }
+                    const differences = Object.keys(expected).filter(a => actual[a] !== (expected[a] & 0xffff));
+                    if (differences.length) allMatch = false;
+                    if (doSync) {
+                        for (const address of differences) {
+                            if (!(await writeRegisterAsync(address, expected[address]))) throw new Error('write failed for ' + address + ' at step ' + (i + 1));
+                            writes++;
+                            const check = await readRegisterAsync(address);
+                            if (!check.ok || check.value !== (expected[address] & 0xffff))
+                                throw new Error('verification failed for ' + address + ' at step ' + (i + 1));
+                        }
+                    }
+                    programLog('Step ' + (i + 1) + ': ' + (differences.length ? 'differences ' + differences.join(', ') + (doSync ? ' updated and verified' : '') : 'matches'));
+                }
+                $('program-match-chip').textContent = doSync ? ('Sync verified · ' + writes + ' writes') : (allMatch ? 'All active steps match' : 'Differences found');
+                if (doSync) programLog('Sync complete: ' + writes + ' differing register values written and read-back verified.');
+                else programLog(allMatch ? 'Thermodat matches all active editor steps.' : 'Thermodat differs from editor steps.');
+            } catch (e) {
+                $('program-match-chip').textContent = 'Check failed';
+                programLog('ERROR: ' + e.message);
+            } finally {
+                programOperationBusy = false;
+                $('read-device-program').disabled = $('sync-device-program').disabled = false;
+            }
+        }
+
+        function pollOnce() {
+            if (programOperationBusy || activeRequest || requestQueue.length) return;
+            if ($('program-armed').checked) {
+                readRegisterAsync('0180').then(result => {
+                    if (result.ok && result.value === 1 && !activeRequest && requestQueue.length === 0) readRegister('0000');
+                });
+            } else {
+                // No application program is armed: keep all dashboard/state values refreshed.
+                readThree();
+            }
+        }
+
+        $('program-steps').addEventListener('change', updateCharts);
+        $('program-number').addEventListener('change', () => {
+            if (workingProgram) workingProgram.programNumber = Number($('program-number').value);
+            updateProgramSummary();
+            updateCharts();
+        });
+        $('program-name').addEventListener('change', () => {
+            if (workingProgram) workingProgram.name = $('program-name').value.trim();
+        });
+        $('refresh-program-list').addEventListener('click', refreshProgramList);
+        $('save-program-file').addEventListener('click', saveProgramFile);
+        $('load-program-file').addEventListener('click', loadProgramFile);
+        $('new-program').addEventListener('click', () => {
+            workingProgram = createEmptyProgram();
+            renderProgramSteps();
+            programLog('Editor cleared; controller unchanged.');
+        });
+        $('read-device-program').addEventListener('click', () => compareOrSyncProgram(false));
+        $('sync-device-program').addEventListener('click', () => compareOrSyncProgram(true));
+        $('program-armed').addEventListener('change', () => programLog(
+            $('program-armed').checked
+                ? 'Application-run gate enabled: temperature is sampled only while regulation is ON.'
+                : 'No application-run gate: temperature and state polling continue regardless of regulation state.'
+        ));
 
         document.querySelectorAll('.tab').forEach(button => {
             button.addEventListener('click', () => activateTab(button.dataset.tab));
@@ -1821,6 +2327,9 @@
         updateClock();
         updateBuilder();
         updateStats();
+        workingProgram = createEmptyProgram();
+        renderProgramSteps();
+        refreshProgramList();
         connect();
     })();
 </script>
