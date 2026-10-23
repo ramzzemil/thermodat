@@ -1,0 +1,1828 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Термодат 17E6 · Modbus ASCII monitor</title>
+    <meta name="description" content="Local monitor for a Термодат-17Е6 over Modbus ASCII and an ESP32-C3.">
+    <style>
+        :root {
+            color-scheme: dark;
+            --bg: #0b1016;
+            --panel: #121a24;
+            --panel2: #172230;
+            --line: #263546;
+            --text: #e6edf5;
+            --muted: #8ea0b4;
+            --accent: #66e3c4;
+            --blue: #80aaff;
+            --warn: #f4c56a;
+            --danger: #ff7d86;
+            --radius: 15px
+        }
+
+        * {
+            box-sizing: border-box
+        }
+
+        body {
+            margin: 0;
+            background: radial-gradient(ellipse at 15% -10%, #183047 0, transparent 42%), var(--bg);
+            color: var(--text);
+            font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif
+        }
+
+        button, input, select {
+            font: inherit
+        }
+
+        button {
+            cursor: pointer
+        }
+
+        button:disabled {
+            opacity: .45;
+            cursor: not-allowed
+        }
+
+        .topbar {
+            display: flex;
+            align-items: center;
+            gap: 18px;
+            flex-wrap: wrap;
+            padding: 16px 22px;
+            border-bottom: 1px solid var(--line);
+            background: #0d141df0;
+            position: sticky;
+            top: 0;
+            z-index: 5;
+            backdrop-filter: blur(12px)
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 12px
+        }
+
+        .logo {
+            width: 38px;
+            height: 38px;
+            display: grid;
+            place-items: center;
+            border-radius: 12px;
+            background: #173e3c;
+            color: var(--accent);
+            font-size: 22px
+        }
+
+        .brand strong {
+            display: block;
+            font-size: 15px;
+            letter-spacing: .02em
+        }
+
+        .brand small {
+            display: block;
+            color: var(--muted);
+            font-size: 12px
+        }
+
+        .linkbar {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            flex-wrap: wrap
+        }
+
+        .spacer {
+            flex: 1
+        }
+
+        .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #637080
+        }
+
+        .dot[data-state=on] {
+            background: var(--accent);
+            box-shadow: 0 0 12px #66e3c477
+        }
+
+        .dot[data-state=bad] {
+            background: var(--danger)
+        }
+
+        .chip {
+            border: 1px solid var(--line);
+            background: #101923;
+            border-radius: 999px;
+            padding: 4px 9px;
+            color: #b5c3d2;
+            font-size: 11px;
+            white-space: nowrap
+        }
+
+        .chip.good {
+            color: var(--accent);
+            border-color: #285c52
+        }
+
+        .chip.warn {
+            color: var(--warn);
+            border-color: #6a5228
+        }
+
+        .mini {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            color: var(--muted);
+            font-size: 12px
+        }
+
+        .mini input, .mini select {
+            width: auto;
+            min-width: 70px
+        }
+
+        input, select {
+            background: #0b131c;
+            border: 1px solid #304256;
+            border-radius: 8px;
+            color: var(--text);
+            padding: 8px 10px;
+            min-width: 0;
+            max-width: 100%;
+            outline: none
+        }
+
+        input:focus, select:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 2px #66e3c41a
+        }
+
+        .btn {
+            border: 1px solid #34475a;
+            border-radius: 9px;
+            padding: 8px 12px;
+            background: #172331;
+            color: var(--text);
+            transition: .15s
+        }
+
+        .btn:hover {
+            border-color: #6b8299;
+            background: #1e2d3e
+        }
+
+        .btn.primary {
+            background: #1a5a50;
+            border-color: #287f70;
+            color: #eafffa
+        }
+
+        .btn.danger {
+            color: #ffb1b7;
+            border-color: #69363e;
+            background: #2a171d
+        }
+
+        .btn.tiny {
+            font-size: 12px;
+            padding: 5px 9px
+        }
+
+        .tabs {
+            display: flex;
+            gap: 5px;
+            padding: 12px 22px;
+            border-bottom: 1px solid var(--line);
+            overflow: auto;
+            background: #0d141d
+        }
+
+        .tab {
+            white-space: nowrap;
+            background: transparent;
+            border: 1px solid transparent;
+            color: var(--muted);
+            padding: 9px 13px;
+            border-radius: 9px
+        }
+
+        .tab.active {
+            background: #1a2b38;
+            border-color: #304858;
+            color: var(--text)
+        }
+
+        .tab .k {
+            font-size: 10px;
+            color: var(--accent);
+            margin-right: 7px
+        }
+
+        main {
+            max-width: 1500px;
+            margin: auto;
+            padding: 22px
+        }
+
+        .panel {
+            display: none
+        }
+
+        .panel.active {
+            display: block
+        }
+
+        .tiles {
+            display: grid;
+            grid-template-columns:repeat(4, minmax(0, 1fr));
+            gap: 12px;
+            margin-bottom: 16px
+        }
+
+        .tile, .card {
+            background: linear-gradient(145deg, #141e29, #111923);
+            border: 1px solid var(--line);
+            border-radius: var(--radius);
+            box-shadow: 0 8px 24px #00000014
+        }
+
+        .tile {
+            padding: 17px
+        }
+
+        .tile .label {
+            font-size: 12px;
+            color: var(--muted)
+        }
+
+        .tile .value {
+            font-size: 29px;
+            font-weight: 650;
+            letter-spacing: -.04em;
+            margin: 8px 0 3px
+        }
+
+        .tile .sub {
+            font-size: 11px;
+            color: var(--muted)
+        }
+
+        .accent {
+            color: var(--accent)
+        }
+
+        .blue {
+            color: var(--blue)
+        }
+
+        .warntext {
+            color: var(--warn)
+        }
+
+        .grid-2 {
+            display: grid;
+            grid-template-columns:repeat(2, minmax(0, 1fr));
+            gap: 15px;
+            margin-bottom: 15px
+        }
+
+        .card {
+            padding: 17px;
+            min-width: 0
+        }
+
+        .card-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-bottom: 13px
+        }
+
+        .card-head h2 {
+            font-size: 15px;
+            margin: 0;
+            font-weight: 620
+        }
+
+        .card-head h3 {
+            font-size: 13px;
+            margin: 0
+        }
+
+        .row {
+            display: flex;
+            align-items: center;
+            gap: 9px
+        }
+
+        .wrap {
+            flex-wrap: wrap
+        }
+
+        .space-between {
+            justify-content: space-between
+        }
+
+        .hint {
+            font-size: 12px;
+            color: var(--muted)
+        }
+
+        .hint code, code {
+            color: #a9d7ff;
+            background: #0b131c;
+            border-radius: 5px;
+            padding: 2px 5px
+        }
+
+        .kv {
+            width: 100%;
+            border-collapse: collapse
+        }
+
+        .kv th, .kv td {
+            text-align: left;
+            padding: 9px 7px;
+            border-bottom: 1px solid #24313f
+        }
+
+        .kv th {
+            color: var(--muted);
+            font-weight: 500;
+            width: 45%
+        }
+
+        .kv td {
+            overflow-wrap: anywhere
+        }
+
+        .status-pill {
+            display: inline-block;
+            border: 1px solid var(--line);
+            border-radius: 6px;
+            padding: 3px 7px;
+            font-size: 11px
+        }
+
+        .plot-card {
+            margin-bottom: 15px
+        }
+
+        .plot-wrap {
+            height: 360px;
+            position: relative
+        }
+
+        .plot-wrap canvas {
+            width: 100%;
+            height: 100%
+        }
+
+        .segmented {
+            display: flex;
+            border: 1px solid var(--line);
+            padding: 3px;
+            border-radius: 9px;
+            gap: 2px
+        }
+
+        .segmented button {
+            border: 0;
+            background: transparent;
+            color: var(--muted);
+            border-radius: 6px;
+            padding: 5px 9px;
+            font-size: 11px
+        }
+
+        .segmented button.active {
+            background: #29443f;
+            color: var(--accent)
+        }
+
+        .legend {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            color: var(--muted);
+            font-size: 12px;
+            margin-top: 10px
+        }
+
+        .terminal {
+            height: 320px;
+            overflow: auto;
+            background: #080d12;
+            border: 1px solid #263646;
+            border-radius: 10px;
+            padding: 12px;
+            font: 12px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere
+        }
+
+        .logline {
+            padding: 2px 0;
+            border-bottom: 1px solid #17212b
+        }
+
+        .tx {
+            color: #8ebaff
+        }
+
+        .rx {
+            color: #75e0b6
+        }
+
+        .err {
+            color: #ff9098
+        }
+
+        .muted {
+            color: var(--muted)
+        }
+
+        .form-grid {
+            display: grid;
+            grid-template-columns:repeat(2, minmax(0, 1fr));
+            gap: 12px
+        }
+
+        .field {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            color: var(--muted);
+            font-size: 12px
+        }
+
+        .field input, .field select {
+            width: 100%
+        }
+
+        .field.full {
+            grid-column: 1/-1
+        }
+
+        .preview {
+            background: #0a121a;
+            border: 1px solid var(--line);
+            border-radius: 9px;
+            padding: 10px 12px;
+            margin: 12px 0;
+            display: grid;
+            gap: 7px
+        }
+
+        .preview-row {
+            display: grid;
+            grid-template-columns:75px 1fr;
+            gap: 8px
+        }
+
+        .preview-row .lbl {
+            color: var(--muted);
+            font-size: 11px
+        }
+
+        .preview code {
+            overflow-wrap: anywhere
+        }
+
+        .note {
+            padding: 11px 13px;
+            border-left: 3px solid var(--warn);
+            background: #211d15;
+            color: #c9b98f;
+            border-radius: 0 8px 8px 0;
+            font-size: 12px;
+            margin-top: 13px
+        }
+
+        .table-scroll {
+            overflow: auto
+        }
+
+        table.reg {
+            width: 100%;
+            border-collapse: collapse;
+            min-width: 720px
+        }
+
+        table.reg th, table.reg td {
+            padding: 10px;
+            border-bottom: 1px solid var(--line);
+            text-align: left
+        }
+
+        table.reg th {
+            font-size: 11px;
+            color: var(--muted);
+            font-weight: 500
+        }
+
+        table.reg td {
+            font-family: ui-monospace, monospace;
+            font-size: 12px
+        }
+
+        .footer {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            border-top: 1px solid var(--line);
+            padding: 14px 22px;
+            color: var(--muted);
+            font-size: 11px
+        }
+
+        .hidden {
+            display: none !important
+        }
+
+        .checkline {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            color: var(--muted);
+            font-size: 12px
+        }
+
+        .checkline input {
+            min-width: auto;
+            accent-color: var(--accent)
+        }
+
+        .callout {
+            border: 1px solid #28584e;
+            background: #10231f;
+            padding: 12px;
+            border-radius: 10px;
+            color: #b7ded5;
+            font-size: 12px;
+            margin-top: 12px
+        }
+
+        @media (max-width: 900px) {
+            .tiles {
+                grid-template-columns:repeat(2, minmax(0, 1fr))
+            }
+
+            .grid-2 {
+                grid-template-columns:1fr
+            }
+
+            .topbar {
+                position: static
+            }
+
+            main {
+                padding: 13px
+            }
+
+            .tabs {
+                padding: 10px 13px
+            }
+
+            .plot-wrap {
+                height: 290px
+            }
+        }
+
+        @media (max-width: 520px) {
+            .tiles {
+                grid-template-columns:1fr 1fr;
+                gap: 8px
+            }
+
+            .tile {
+                padding: 12px
+            }
+
+            .tile .value {
+                font-size: 23px
+            }
+
+            .card {
+                padding: 13px
+            }
+
+            .topbar {
+                padding: 13px
+            }
+
+            .form-grid {
+                grid-template-columns:1fr
+            }
+
+            .field.full {
+                grid-column: auto
+            }
+
+            .plot-wrap {
+                height: 250px
+            }
+        }
+    </style>
+</head>
+<body>
+<header class="topbar">
+    <div class="brand">
+        <span class="logo" aria-hidden="true">♨</span>
+        <div><strong>Термодат 17E6</strong><small>Modbus ASCII monitor &amp; terminal</small></div>
+    </div>
+    <div class="linkbar" role="status" aria-live="polite">
+        <span class="dot" id="link-dot" data-state="off"></span><span id="link-text">connecting…</span>
+        <span class="chip" id="chip-transport">ESP32 WebSocket</span>
+        <span class="chip" id="chip-unit">unit 04</span>
+        <span class="chip" id="chip-rtt">rtt —</span>
+        <span class="chip" id="chip-samples">0 samples</span>
+    </div>
+    <div class="spacer"></div>
+    <label class="mini">poll <input type="number" id="poll-interval" value="1500" min="1200" max="600000" step="100"> ms</label>
+    <button class="btn primary" id="btn-poll">▶ Start polling</button>
+</header>
+
+<nav class="tabs" role="tablist">
+    <button class="tab active" data-tab="dashboard"><span class="k">1</span>Dashboard</button>
+    <button class="tab" data-tab="plot"><span class="k">2</span>Plot</button>
+    <button class="tab" data-tab="terminal"><span class="k">3</span>Terminal</button>
+    <button class="tab" data-tab="registers"><span class="k">4</span>Registers</button>
+    <button class="tab" data-tab="connection"><span class="k">5</span>Connection</button>
+</nav>
+
+<main>
+    <section class="panel active" id="tab-dashboard">
+        <div class="tiles">
+            <div class="tile">
+                <div class="label">CHANNEL 0 · TEMPERATURE</div>
+                <div class="value accent" id="current-temp">— °C</div>
+                <div class="sub" id="temp-sub">Read register 0000 to update</div>
+            </div>
+            <div class="tile">
+                <div class="label">TARGET SETPOINT · SP</div>
+                <div class="value blue" id="current-sp">— °C</div>
+                <div class="sub">Register 0173 · scale 0.1 °C</div>
+            </div>
+            <div class="tile">
+                <div class="label">REGULATION</div>
+                <div class="value" id="current-run">Unknown</div>
+                <div class="sub">Register 0180 · 0 off / 1 on / 2 pause</div>
+            </div>
+            <div class="tile">
+                <div class="label">LAST RESPONSE</div>
+                <div class="value" style="font-size:20px" id="last-response">—</div>
+                <div class="sub" id="last-response-time">No Modbus response yet</div>
+            </div>
+        </div>
+
+        <div class="grid-2">
+            <div class="card">
+                <div class="card-head"><h2>Controller state</h2>
+                    <button class="btn tiny" id="read-state">Read now</button>
+                </div>
+                <table class="kv">
+                    <tbody>
+                    <tr>
+                        <th>Temperature register</th>
+                        <td><code>0000</code> <span id="state-temp">—</span></td>
+                    </tr>
+                    <tr>
+                        <th>Setpoint register</th>
+                        <td><code>0173</code> <span id="state-sp">—</span></td>
+                    </tr>
+                    <tr>
+                        <th>Regulation register</th>
+                        <td><code>0180</code> <span id="state-run">—</span></td>
+                    </tr>
+                    <tr>
+                        <th>UART</th>
+                        <td>115200 baud · 8N1</td>
+                    </tr>
+                    <tr>
+                        <th>ESP32 pins</th>
+                        <td>TX GPIO 4 · RX GPIO 5</td>
+                    </tr>
+                    </tbody>
+                </table>
+                <div class="callout">Live readings come from the Термодат over RS-485. Use the read buttons to query
+                    individual registers. The controller's regulation output can energize connected equipment.
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-head"><h2>Quick actions</h2><span class="hint">Channel 0 · device 04</span></div>
+                <div class="row wrap">
+                    <button class="btn" data-read="0000">Read temperature</button>
+                    <button class="btn" data-read="0173">Read setpoint</button>
+                    <button class="btn" data-read="0180">Read regulation state</button>
+                </div>
+                <hr style="border:0;border-top:1px solid var(--line);margin:16px 0">
+                <label class="field">Set target setpoint (°C)
+                    <div class="row"><input id="sp-input" type="number" value="25.0" step="0.1" min="-270" max="2500">
+                        <button class="btn primary" id="set-sp">Write setpoint</button>
+                    </div>
+                </label>
+                <div style="height:12px"></div>
+                <label class="checkline"><input type="checkbox" id="allow-writes"> I understand writes can affect
+                    connected equipment</label>
+                <div class="row wrap" style="margin-top:10px">
+                    <button class="btn danger" id="reg-off">Turn regulation OFF</button>
+                    <button class="btn primary" id="reg-on">Turn regulation ON</button>
+                </div>
+                <p class="hint">Writes are locked until the checkbox is enabled. Confirm the register map and connected
+                    load before enabling regulation.</p>
+            </div>
+        </div>
+        <div class="card plot-card">
+            <div class="card-head"><h2>Temperature trend</h2>
+                <button class="btn tiny" data-tab-jump="plot">Open full plot ↗</button>
+            </div>
+            <div class="plot-wrap" style="height:240px">
+                <canvas id="plot-canvas"></canvas>
+            </div>
+            <div class="hint">The chart updates from successful reads of register <code>0000</code>.</div>
+        </div>
+    </section>
+
+    <section class="panel" id="tab-plot">
+        <div class="card plot-card">
+            <div class="card-head"><h2>Temperature trend</h2>
+                <div class="row wrap">
+                    <div class="segmented" id="win-buttons">
+                        <button data-win="60000">1 min</button>
+                        <button data-win="600000" class="active">10 min</button>
+                        <button data-win="3600000">1 h</button>
+                        <button data-win="86400000">24 h</button>
+                    </div>
+                    <button class="btn tiny" id="clear-plot">Clear history</button>
+                    <button class="btn tiny" id="export-csv">Export CSV</button>
+                </div>
+            </div>
+            <div class="plot-wrap">
+                <canvas id="plot-canvas-large"></canvas>
+            </div>
+            <div class="legend"><span class="accent">●</span> Channel 0 temperature (register 0000)</div>
+        </div>
+        <div class="grid-2">
+            <div class="card">
+                <div class="card-head"><h2>Statistics</h2></div>
+                <table class="kv">
+                    <tbody>
+                    <tr>
+                        <th>Latest</th>
+                        <td id="stat-last">—</td>
+                    </tr>
+                    <tr>
+                        <th>Minimum</th>
+                        <td id="stat-min">—</td>
+                    </tr>
+                    <tr>
+                        <th>Maximum</th>
+                        <td id="stat-max">—</td>
+                    </tr>
+                    <tr>
+                        <th>Average</th>
+                        <td id="stat-avg">—</td>
+                    </tr>
+                    <tr>
+                        <th>Samples</th>
+                        <td id="stat-count">0</td>
+                    </tr>
+                    </tbody>
+                </table>
+            </div>
+            <div class="card">
+                <div class="card-head"><h2>Acquisition</h2></div>
+                <p class="hint">Use <strong>Start polling</strong> in the top bar to read the actual temperature
+                    register periodically. Polling sends one Modbus request at a time, so the ESP32 has time to receive
+                    the controller's reply.</p>
+                <p class="hint">History is held in this browser tab. Export CSV before reloading if you want to keep a
+                    copy.</p></div>
+        </div>
+    </section>
+
+    <section class="panel" id="tab-terminal">
+        <div class="grid-2">
+            <div class="card">
+                <div class="card-head"><h2>Modbus ASCII console</h2>
+                    <div class="row"><label class="checkline"><input type="checkbox" id="show-time" checked> timestamps</label>
+                        <button class="btn tiny" id="clear-log">Clear</button>
+                    </div>
+                </div>
+                <div class="terminal" id="terminal-log" aria-live="polite"></div>
+                <div class="row wrap" style="margin-top:10px">
+                    <button class="btn" id="save-log">Save log</button>
+                    <span class="chip" id="tx-count">tx 0</span><span class="chip" id="rx-count">rx 0</span><span
+                        class="chip" id="err-count">err 0</span></div>
+            </div>
+            <div class="card">
+                <div class="card-head"><h2>Command builder</h2><span class="hint">LRC + framing added by ESP32</span>
+                </div>
+                <div class="form-grid">
+                    <label class="field">Function<select id="func">
+                        <option value="3">03 · Read holding registers</option>
+                        <option value="4">04 · Read input registers</option>
+                        <option value="6">06 · Write single register</option>
+                    </select></label>
+                    <label class="field">Unit address<input id="unit" type="number" value="4" min="1" max="247"></label>
+                    <label class="field">Register address (hex)<input id="address" value="0000" maxlength="4"
+                                                                      spellcheck="false"></label>
+                    <label class="field" id="qty-field">Quantity<input id="quantity" type="number" value="1" min="1"
+                                                                       max="125"></label>
+                    <label class="field hidden" id="value-field">Value (decimal raw)<input id="raw-value" type="number"
+                                                                                           value="250" min="0"
+                                                                                           max="65535"></label>
+                </div>
+                <div class="preview">
+                    <div class="preview-row"><span class="lbl">payload</span><code
+                            id="preview-payload">040300000001</code></div>
+                    <div class="preview-row"><span class="lbl">full frame</span><code id="preview-frame">:040300000001…
+                        CRLF</code></div>
+                    <div class="preview-row"><span class="lbl">meaning</span><code id="preview-meaning">Read 1 register
+                        from 0000</code></div>
+                </div>
+                <div class="row wrap">
+                    <button class="btn primary" id="send-built">▶ Send command</button>
+                    <button class="btn" id="copy-payload">Copy payload</button>
+                </div>
+                <hr style="border:0;border-top:1px solid var(--line);margin:16px 0">
+                <label class="field">Raw payload (hex, without LRC)<input id="raw-command"
+                                                                          placeholder="e.g. 040300000001"
+                                                                          spellcheck="false"></label>
+                <div class="row wrap" style="margin-top:10px">
+                    <button class="btn" id="send-raw">Send raw payload</button>
+                    <button class="btn" data-raw="040300000001">Read temperature</button>
+                    <button class="btn" data-raw="040301730001">Read SP</button>
+                    <button class="btn" data-raw="040301800001">Read regulation</button>
+                </div>
+                <p class="hint">The ESP32 expects a hex payload after <code>CMD:</code>. Do not include the colon, LRC,
+                    or CRLF in this input.</p>
+            </div>
+        </div>
+    </section>
+
+    <section class="panel" id="tab-registers">
+        <div class="card">
+            <div class="card-head"><h2>Known register map · channel 0</h2>
+                <button class="btn tiny" id="refresh-registers">Read all known values</button>
+            </div>
+            <div class="table-scroll">
+                <table class="reg">
+                    <thead>
+                    <tr>
+                        <th>Address</th>
+                        <th>Parameter</th>
+                        <th>Scale / values</th>
+                        <th>Access</th>
+                        <th>Live value</th>
+                        <th>Action</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    <tr>
+                        <td>0000</td>
+                        <td>Temperature (confirmed from your register list)</td>
+                        <td>0.1 °C</td>
+                        <td>Read</td>
+                        <td id="reg-temp">—</td>
+                        <td>
+                            <button class="btn tiny" data-read="0000">Read</button>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>0173</td>
+                        <td>SP · target setpoint</td>
+                        <td>0.1 °C for thermocouple / RTD / pyrometer</td>
+                        <td>Read / write</td>
+                        <td id="reg-sp">—</td>
+                        <td>
+                            <button class="btn tiny" data-read="0173">Read</button>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>0180</td>
+                        <td>Regulation state</td>
+                        <td>0 off · 1 on · 2 pause</td>
+                        <td>Read / write</td>
+                        <td id="reg-run">—</td>
+                        <td>
+                            <button class="btn tiny" data-read="0180">Read</button>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>0030</td>
+                        <td>Other parameter (meaning not confirmed)</td>
+                        <td>Not assumed</td>
+                        <td>Read only here</td>
+                        <td id="reg-0030">—</td>
+                        <td>
+                            <button class="btn tiny" data-read="0030">Read</button>
+                        </td>
+                    </tr>
+                    </tbody>
+                </table>
+            </div>
+            <div class="note">Only the meanings supplied or confirmed in this conversation are labelled as known. Don't
+                write to undocumented registers. Register addressing for other channels follows the manual's
+                channel-offset rule and must be verified before use.
+            </div>
+        </div>
+    </section>
+
+    <section class="panel" id="tab-connection">
+        <div class="grid-2">
+            <div class="card">
+                <div class="card-head"><h2>Connection</h2></div>
+                <table class="kv">
+                    <tbody>
+                    <tr>
+                        <th>Transport</th>
+                        <td>Browser → WebSocket → ESP32-C3</td>
+                    </tr>
+                    <tr>
+                        <th>WebSocket</th>
+                        <td id="ws-url">—</td>
+                    </tr>
+                    <tr>
+                        <th>HTTP page</th>
+                        <td id="http-url">—</td>
+                    </tr>
+                    <tr>
+                        <th>Modbus unit</th>
+                        <td>04</td>
+                    </tr>
+                    <tr>
+                        <th>Serial format</th>
+                        <td>115200 baud · SERIAL_8N1</td>
+                    </tr>
+                    <tr>
+                        <th>ESP32 UART</th>
+                        <td>TX GPIO 4 · RX GPIO 5</td>
+                    </tr>
+                    <tr>
+                        <th>Chart library</th>
+                        <td>Local <code>/chart.js</code> from LittleFS</td>
+                    </tr>
+                    </tbody>
+                </table>
+                <div class="row wrap" style="margin-top:12px">
+                    <button class="btn primary" id="reconnect">Reconnect WebSocket</button>
+                    <button class="btn" id="test-temp">Read temperature</button>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-head"><h2>Write safety</h2></div>
+                <p class="hint">Write commands are disabled until you tick the acknowledgement on the Dashboard. Reading
+                    registers is always available.</p>
+                <p class="hint">Setpoint register <code>0173</code> uses a raw value of 250 for 25.0 °C when the
+                    configured sensor type uses 0.1 °C resolution.</p>
+                <p class="hint">Regulation register <code>0180</code>: write 0 to turn regulation off, 1 to turn it on,
+                    or 2 to pause. Turning regulation on may energize a connected heater or actuator.</p>
+                <div class="note">The page cannot guarantee that a physical heater is safe. Check the controller mode,
+                    sensor, output wiring, and load before enabling regulation.
+                </div>
+            </div>
+        </div>
+    </section>
+</main>
+
+<footer class="footer">
+    <span>Термодат 17E6 · Modbus ASCII · ESP32-C3</span>
+    <span class="spacer"></span>
+    <span>Local time: <strong id="footer-clock">—</strong></span>
+    <span id="footer-status">waiting for WebSocket</span>
+</footer>
+
+<script src="/chart.js"></script>
+<script>
+    (() => {
+        'use strict';
+
+        const $ = id => document.getElementById(id);
+
+        let socket = null;
+        let polling = false;
+        let pollTimer = null;
+
+        // Only one Modbus request may be in flight at a time.
+        // Additional requests wait in this queue.
+        let activeRequest = null;
+        const requestQueue = [];
+        let responseTimeout = null;
+
+        let tx = 0, rx = 0, err = 0, rtt = null, lastRaw = '';
+        let chartWindow = 600000;
+
+        const samples = [];
+        const RESPONSE_TIMEOUT_MS = 1800;
+
+        function log(message, kind = 'muted') {
+            const line = document.createElement('div');
+            line.className = 'logline ' + kind;
+
+            const stamp = $('show-time')?.checked !== false
+                ? '[' + new Date().toLocaleTimeString() + '] '
+                : '';
+
+            line.textContent = stamp + message;
+            $('terminal-log').appendChild(line);
+            $('terminal-log').scrollTop = $('terminal-log').scrollHeight;
+        }
+
+        function updateCounters() {
+            $('tx-count').textContent = 'tx ' + tx;
+            $('rx-count').textContent = 'rx ' + rx;
+            $('err-count').textContent = 'err ' + err;
+        }
+
+        function setLink(state, text) {
+            $('link-dot').dataset.state = state;
+            $('link-text').textContent = text;
+            $('footer-status').textContent = text;
+        }
+
+        function updateClock() {
+            $('footer-clock').textContent = new Date().toLocaleString();
+        }
+
+        // Modbus ASCII LRC validation. The sum of all bytes including LRC
+        // must be zero modulo 256.
+        function validAsciiFrame(frame) {
+            if (!frame || frame[0] !== ':') return false;
+
+            const body = frame.slice(1).replace(/[\r\n]/g, '');
+
+            if (!body || body.length % 2 !== 0 || !/^[0-9A-F]+$/.test(body)) {
+                return false;
+            }
+
+            let sum = 0;
+            for (let i = 0; i < body.length; i += 2) {
+                sum = (sum + parseInt(body.slice(i, i + 2), 16)) & 0xFF;
+            }
+
+            return sum === 0;
+        }
+
+        function connect() {
+            if (socket) {
+                try {
+                    socket.close();
+                } catch (e) {
+                }
+            }
+
+            clearTimeout(responseTimeout);
+            responseTimeout = null;
+            activeRequest = null;
+            requestQueue.length = 0;
+
+            const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const url = proto + '//' + location.hostname + ':81/';
+
+            $('ws-url').textContent = url;
+            $('http-url').textContent = location.origin;
+            setLink('off', 'connecting…');
+
+            try {
+                socket = new WebSocket(url);
+            } catch (e) {
+                setLink('bad', 'connection failed');
+                log('WebSocket error: ' + e.message, 'err');
+                return;
+            }
+
+            socket.onopen = () => {
+                setLink('on', 'online');
+                $('chip-transport').textContent = 'ESP32 WebSocket';
+                log('Connected to ' + url, 'rx');
+                pumpQueue();
+            };
+
+            socket.onclose = () => {
+                clearTimeout(responseTimeout);
+                responseTimeout = null;
+                activeRequest = null;
+                requestQueue.length = 0;
+                setLink('bad', 'offline');
+                log('WebSocket disconnected; pending requests cleared', 'err');
+            };
+
+            socket.onerror = () => {
+                setLink('bad', 'socket error');
+            };
+
+            socket.onmessage = event => handleMessage(String(event.data));
+        }
+
+        function sendPayload(payload, description = 'Manual command') {
+            payload = String(payload).replace(/[\s:]/g, '').toUpperCase();
+
+            if (!/^[0-9A-F]+$/.test(payload) || payload.length % 2 !== 0) {
+                err++;
+                updateCounters();
+                log('Invalid hex payload. Use complete byte pairs without LRC.', 'err');
+                return false;
+            }
+
+            if (!socket || socket.readyState !== WebSocket.OPEN) {
+                log('Not connected to ESP32. Reconnect first.', 'err');
+                return false;
+            }
+
+            if (payload.length < 6) {
+                log('Payload is too short.', 'err');
+                return false;
+            }
+
+            const unit = parseInt(payload.slice(0, 2), 16);
+            const fn = parseInt(payload.slice(2, 4), 16);
+
+            if (unit < 1 || unit > 247) {
+                log('Invalid Modbus unit address.', 'err');
+                return false;
+            }
+
+            if (![3, 4, 6, 16].includes(fn)) {
+                log('Unsupported function code: ' + fn, 'err');
+                return false;
+            }
+
+            if ((fn === 6 || fn === 16) && !$('allow-writes').checked) {
+                log('WRITE BLOCKED: tick the safety acknowledgement on Dashboard to enable writes.', 'err');
+                return false;
+            }
+
+            // Validate the standard request payload sizes for the functions used here.
+            if ((fn === 3 || fn === 4) && payload.length !== 12) {
+                log('Read command must contain unit, function, address and quantity (6 bytes).', 'err');
+                return false;
+            }
+
+            if (fn === 6 && payload.length !== 12) {
+                log('Function 06 must contain one register value.', 'err');
+                return false;
+            }
+
+            requestQueue.push({
+                payload,
+                description,
+                unit,
+                fn,
+                address: payload.slice(4, 8),
+                sentAt: 0
+            });
+
+            pumpQueue();
+            return true;
+        }
+
+        function pumpQueue() {
+            if (activeRequest) return;
+            if (!socket || socket.readyState !== WebSocket.OPEN) return;
+            if (requestQueue.length === 0) return;
+
+            const request = requestQueue.shift();
+            activeRequest = request;
+            request.sentAt = performance.now();
+
+            // Retain this global for compatibility with browser-console debugging.
+            window.__lastRequest = request.payload;
+
+            tx++;
+            updateCounters();
+
+            log('TX  ' + request.payload + '   (' + request.description + ')', 'tx');
+
+            try {
+                socket.send('CMD:' + request.payload);
+            } catch (e) {
+                activeRequest = null;
+                err++;
+                updateCounters();
+                log('Failed to send command: ' + e.message, 'err');
+                pumpQueue();
+                return;
+            }
+
+            clearTimeout(responseTimeout);
+            responseTimeout = setTimeout(() => {
+                if (!activeRequest || activeRequest !== request) return;
+
+                log('Timeout waiting for response to ' + request.payload, 'err');
+                err++;
+                updateCounters();
+
+                activeRequest = null;
+                responseTimeout = null;
+                pumpQueue();
+            }, RESPONSE_TIMEOUT_MS);
+        }
+
+        function finishActiveRequest() {
+            clearTimeout(responseTimeout);
+            responseTimeout = null;
+            activeRequest = null;
+            pumpQueue();
+        }
+
+        function handleMessage(message) {
+            if (message.startsWith('TX:')) {
+                log(message, 'tx');
+                return;
+            }
+
+            if (message.startsWith('ERROR:')) {
+                err++;
+                updateCounters();
+                log(message, 'err');
+
+                if (activeRequest) finishActiveRequest();
+                return;
+            }
+
+            if (message.startsWith(':')) {
+                const frame = message.replace(/[\r\n]/g, '').toUpperCase();
+
+                rx++;
+                updateCounters();
+
+                lastRaw = frame;
+                $('last-response').textContent =
+                    frame.length > 22 ? frame.slice(0, 22) + '…' : frame;
+                $('last-response-time').textContent =
+                    'Received ' + new Date().toLocaleTimeString();
+
+                log('RX  ' + frame, 'rx');
+
+                if (!validAsciiFrame(frame)) {
+                    err++;
+                    updateCounters();
+                    log('Invalid Modbus ASCII response or incorrect LRC; response ignored.', 'err');
+
+                    if (activeRequest) finishActiveRequest();
+                    return;
+                }
+
+                if (!activeRequest) {
+                    log('Valid response received without a matching active request; not used to update readings.', 'muted');
+                    return;
+                }
+
+                const request = activeRequest;
+                const body = frame.slice(1);
+                const responseUnit = parseInt(body.slice(0, 2), 16);
+                const responseFn = parseInt(body.slice(2, 4), 16);
+
+                // Check that the response belongs to the command currently in flight.
+                if (responseUnit !== request.unit) {
+                    err++;
+                    updateCounters();
+                    log('Response unit mismatch: expected ' + request.unit + ', received ' + responseUnit, 'err');
+                    finishActiveRequest();
+                    return;
+                }
+
+                const expectedFn = request.fn;
+                if (responseFn !== expectedFn && responseFn !== (expectedFn | 0x80)) {
+                    err++;
+                    updateCounters();
+                    log('Response function mismatch: expected ' + expectedFn + ', received ' + responseFn, 'err');
+                    finishActiveRequest();
+                    return;
+                }
+
+                rtt = Math.round(performance.now() - request.sentAt);
+                $('chip-rtt').textContent = 'rtt ' + rtt + ' ms';
+
+                // Parse against this specific request, not whichever command was most recently clicked.
+                parseResponse(frame, request);
+                finishActiveRequest();
+                return;
+            }
+
+            // Ignore the old firmware's synthetic numeric broadcasts. They must never enter the graph.
+            if (/^-?\d+(\.\d+)?$/.test(message.trim())) {
+                $('chip-transport').textContent = 'ESP32 · legacy numeric feed ignored';
+                return;
+            }
+
+            log('RX  ' + message, 'muted');
+        }
+
+        function parseResponse(frame, request) {
+            const body = frame.slice(1);
+            if (body.length < 8) return;
+
+            const fn = parseInt(body.slice(2, 4), 16);
+
+            if (fn & 0x80) {
+                const exceptionCode = parseInt(body.slice(4, 6), 16);
+                log(
+                    'Modbus exception for register ' + request.address +
+                    ': function ' + fn.toString(16).toUpperCase() +
+                    ', code ' + exceptionCode,
+                    'err'
+                );
+                return;
+            }
+
+            // A successful function 06 response echoes the write request.
+            // No temperature parsing is needed for writes.
+            if (fn === 6) {
+                log('Write acknowledgement received for register ' + request.address, 'rx');
+                return;
+            }
+
+            if (fn !== 3 && fn !== 4) return;
+
+            const byteCount = parseInt(body.slice(4, 6), 16);
+            if (!Number.isFinite(byteCount) || byteCount < 2 || byteCount % 2 !== 0) {
+                log('Invalid response byte count.', 'err');
+                return;
+            }
+
+            // Expected response length: unit + function + byte count + data + LRC.
+            if (body.length !== 8 + byteCount * 2) {
+                log('Response length does not match the reported byte count.', 'err');
+                return;
+            }
+
+            const values = [];
+            for (let i = 0; i < byteCount; i += 2) {
+                values.push(parseInt(body.slice(6 + i * 2, 10 + i * 2), 16));
+            }
+
+            if (values.some(v => !Number.isFinite(v))) {
+                log('Unable to decode response register data.', 'err');
+                return;
+            }
+
+            // Update the UI only when the reply matches a known single-register read.
+            const reqAddr = request.address;
+
+            if (reqAddr === '0000' && values.length === 1) {
+                const temp = signed16(values[0]) / 10;
+
+                $('current-temp').textContent = temp.toFixed(1) + ' °C';
+                $('temp-sub').textContent =
+                    'Register 0000 · updated ' + new Date().toLocaleTimeString();
+                $('state-temp').textContent = temp.toFixed(1) + ' °C';
+                $('reg-temp').textContent = temp.toFixed(1) + ' °C';
+
+                // This is the only path that adds data to the temperature graph.
+                addSample(temp);
+            } else if (reqAddr === '0173' && values.length === 1) {
+                const sp = signed16(values[0]) / 10;
+
+                $('current-sp').textContent = sp.toFixed(1) + ' °C';
+                $('state-sp').textContent = sp.toFixed(1) + ' °C';
+                $('reg-sp').textContent = sp.toFixed(1) + ' °C';
+                $('sp-input').value = sp.toFixed(1);
+            } else if (reqAddr === '0180' && values.length === 1) {
+                const value = values[0];
+                const state = value === 0 ? 'OFF'
+                    : value === 1 ? 'ON'
+                        : value === 2 ? 'PAUSED'
+                            : 'Unknown (' + value + ')';
+
+                $('current-run').textContent = state;
+                $('state-run').textContent = state;
+                $('reg-run').textContent = state;
+            } else if (reqAddr === '0030' && values.length === 1) {
+                $('reg-0030').textContent =
+                    '0x' + values[0].toString(16).toUpperCase().padStart(4, '0');
+            } else {
+                log(
+                    'Read completed: address ' + reqAddr +
+                    ', values ' + values.map(v => '0x' + v.toString(16).toUpperCase().padStart(4, '0')).join(', '),
+                    'muted'
+                );
+            }
+        }
+
+        function signed16(n) {
+            return n > 32767 ? n - 65536 : n;
+        }
+
+        function readRegister(address) {
+            address = String(address).replace(/^0x/i, '').toUpperCase().padStart(4, '0');
+
+            if (!/^[0-9A-F]{4}$/.test(address)) {
+                log('Invalid register address: ' + address, 'err');
+                return;
+            }
+
+            sendPayload('0403' + address + '0001', 'read register ' + address);
+        }
+
+        // Requests are queued immediately; pumpQueue sends each only after the previous
+        // response arrives or times out. No setTimeout-based overlapping reads.
+        function readThree() {
+            readRegister('0000');
+            readRegister('0173');
+            readRegister('0180');
+        }
+
+        function addSample(temp) {
+            if (!Number.isFinite(temp)) return;
+
+            const point = {x: Date.now(), y: temp};
+            samples.push(point);
+
+            $('chip-samples').textContent = samples.length + ' samples';
+            updateCharts();
+            updateStats();
+        }
+
+        function visibleSamples() {
+            const cutoff = Date.now() - chartWindow;
+            return samples.filter(p => p.x >= cutoff);
+        }
+
+        function makeChart(canvas) {
+            if (!window.Chart || !canvas) {
+                log('Chart.js not found. Check that /chart.js exists in LittleFS.', 'err');
+                return null;
+            }
+
+            return new Chart(canvas.getContext('2d'), {
+                type: 'line',
+                data: {
+                    datasets: [{
+                        label: 'Channel 0 temperature',
+                        data: [],
+                        parsing: false,
+                        borderColor: '#66e3c4',
+                        backgroundColor: '#66e3c41a',
+                        borderWidth: 2,
+                        pointRadius: 0,
+                        pointHoverRadius: 4,
+                        fill: true,
+                        tension: 0.18
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: false,
+                    normalized: true,
+                    interaction: {intersect: false, mode: 'nearest'},
+                    plugins: {
+                        legend: {display: false},
+                        tooltip: {
+                            callbacks: {
+                                title: function(items) {
+                                    const value = items[0].parsed.x;
+                                    const date = new Date(value);
+
+                                    return date.toLocaleString(undefined, {
+                                        year: 'numeric',
+                                        month: 'short',
+                                        day: '2-digit',
+                                        hour: '2-digit',
+                                        minute: '2-digit',
+                                        second: '2-digit',
+                                        hour12: false
+                                    });
+                                },
+                                label: c => c.parsed.y.toFixed(1) + ' °C'
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            type: 'linear',
+                            ticks: {
+                                color: '#8ea0b4',
+                                maxTicksLimit: 7,
+                                callback: v => new Date(v).toLocaleTimeString()
+                            },
+                            grid: {color: '#24313f'},
+                            title: {
+                                display: true,
+                                text: 'Time',
+                                color: '#8ea0b4'
+                            }
+                        },
+                        y: {
+                            ticks: {
+                                color: '#8ea0b4',
+                                callback: v => v + ' °C'
+                            },
+                            grid: {color: '#24313f'},
+                            title: {
+                                display: true,
+                                text: 'Temperature',
+                                color: '#8ea0b4'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        const charts = [
+            makeChart($('plot-canvas')),
+            makeChart($('plot-canvas-large'))
+        ].filter(Boolean);
+
+        function updateCharts() {
+            const data = visibleSamples();
+
+            charts.forEach(chart => {
+                chart.data.datasets[0].data = data;
+                chart.update('none');
+            });
+        }
+
+        function updateStats() {
+            const data = visibleSamples().map(p => p.y);
+
+            $('stat-count').textContent = data.length;
+
+            if (!data.length) {
+                ['stat-last', 'stat-min', 'stat-max', 'stat-avg'].forEach(id => {
+                    $(id).textContent = '—';
+                });
+                return;
+            }
+
+            $('stat-last').textContent = data[data.length - 1].toFixed(1) + ' °C';
+            $('stat-min').textContent = Math.min(...data).toFixed(1) + ' °C';
+            $('stat-max').textContent = Math.max(...data).toFixed(1) + ' °C';
+            $('stat-avg').textContent =
+                (data.reduce((a, b) => a + b, 0) / data.length).toFixed(1) + ' °C';
+        }
+
+        function updateBuilder() {
+            const fn = +$('func').value;
+            const unit = +$('unit').value;
+            const addr = $('address').value.trim().replace(/^0x/i, '');
+            const a = parseInt(addr, 16);
+
+            if (
+                !/^[0-9a-fA-F]{1,4}$/.test(addr) ||
+                !Number.isFinite(a) ||
+                a < 0 || a > 65535 ||
+                !Number.isInteger(unit) || unit < 1 || unit > 247
+            ) {
+                $('preview-payload').textContent = 'Invalid address/unit';
+                $('preview-frame').textContent = '—';
+                $('preview-meaning').textContent = 'Check the address and unit';
+                return;
+            }
+
+            let payload = unit.toString(16).padStart(2, '0') +
+                fn.toString(16).padStart(2, '0') +
+                a.toString(16).padStart(4, '0');
+
+            if (fn === 6) {
+                const val = +$('raw-value').value;
+
+                if (!Number.isInteger(val) || val < 0 || val > 65535) {
+                    $('preview-payload').textContent = 'Invalid value';
+                    $('preview-frame').textContent = '—';
+                    $('preview-meaning').textContent = 'Check the register value';
+                    return;
+                }
+
+                payload += val.toString(16).padStart(4, '0');
+            } else {
+                const qty = +$('quantity').value;
+
+                if (!Number.isInteger(qty) || qty < 1 || qty > 125) {
+                    $('preview-payload').textContent = 'Invalid quantity';
+                    $('preview-frame').textContent = '—';
+                    $('preview-meaning').textContent = 'Quantity must be 1–125';
+                    return;
+                }
+
+                payload += qty.toString(16).padStart(4, '0');
+            }
+
+            payload = payload.toUpperCase();
+
+            $('preview-payload').textContent = payload;
+            $('preview-frame').textContent = ':' + payload + ' + LRC + CRLF';
+            $('preview-meaning').textContent = fn === 6
+                ? 'Write value ' + $('raw-value').value + ' to register ' + a.toString(16).toUpperCase().padStart(4, '0')
+                : 'Read ' + $('quantity').value + ' register(s) from ' + a.toString(16).toUpperCase().padStart(4, '0');
+        }
+
+        $('func').addEventListener('change', () => {
+            const write = +$('func').value === 6;
+            $('qty-field').classList.toggle('hidden', write);
+            $('value-field').classList.toggle('hidden', !write);
+            updateBuilder();
+        });
+
+        ['unit', 'address', 'quantity', 'raw-value'].forEach(id => {
+            $(id).addEventListener('input', updateBuilder);
+        });
+
+        $('send-built').addEventListener('click', () => {
+            const payload = $('preview-payload').textContent;
+
+            if (!/^[0-9A-F]+$/.test(payload)) {
+                log('Fix the command builder fields before sending.', 'err');
+                return;
+            }
+
+            sendPayload(payload, 'command builder');
+        });
+
+        $('copy-payload').addEventListener('click', async () => {
+            const payload = $('preview-payload').textContent;
+
+            try {
+                await navigator.clipboard.writeText(payload);
+                log('Payload copied: ' + payload, 'muted');
+            } catch (e) {
+                log('Clipboard unavailable in this browser context.', 'err');
+            }
+        });
+
+        $('send-raw').addEventListener('click', () => {
+            const payload = $('raw-command').value.trim().replace(/^:/, '').replace(/[\r\n]/g, '');
+            sendPayload(payload, 'raw command');
+        });
+
+        $('raw-command').addEventListener('keydown', e => {
+            if (e.key === 'Enter') $('send-raw').click();
+        });
+
+        document.querySelectorAll('[data-raw]').forEach(button => {
+            button.addEventListener('click', () => {
+                $('raw-command').value = button.dataset.raw;
+                sendPayload(button.dataset.raw, 'quick read');
+            });
+        });
+
+        document.querySelectorAll('[data-read]').forEach(button => {
+            button.addEventListener('click', () => readRegister(button.dataset.read));
+        });
+
+        $('read-state').addEventListener('click', readThree);
+        $('refresh-registers').addEventListener('click', readThree);
+        $('test-temp').addEventListener('click', () => readRegister('0000'));
+        $('reconnect').addEventListener('click', connect);
+
+        $('set-sp').addEventListener('click', () => {
+            const deg = +$('sp-input').value;
+
+            if (!Number.isFinite(deg) || deg < -270 || deg > 2500) {
+                log('Setpoint is outside the allowed input range.', 'err');
+                return;
+            }
+
+            const raw = Math.round(deg * 10);
+            const hex = (raw < 0 ? raw + 65536 : raw)
+                .toString(16).toUpperCase().padStart(4, '0');
+
+            sendPayload('04060173' + hex, 'write SP ' + deg.toFixed(1) + ' °C');
+        });
+
+        function writeRegState(value) {
+            const payload = '04060180' +
+                value.toString(16).toUpperCase().padStart(4, '0');
+
+            sendPayload(
+                payload,
+                'regulation ' + (value === 0 ? 'OFF' : value === 1 ? 'ON' : 'PAUSE')
+            );
+        }
+
+        $('reg-off').addEventListener('click', () => writeRegState(0));
+        $('reg-on').addEventListener('click', () => writeRegState(1));
+
+        $('btn-poll').addEventListener('click', () => {
+            polling = !polling;
+
+            $('btn-poll').textContent = polling ? '⏸ Stop polling' : '▶ Start polling';
+            $('btn-poll').classList.toggle('primary', !polling);
+
+            if (pollTimer) {
+                clearInterval(pollTimer);
+                pollTimer = null;
+            }
+
+            if (polling) {
+                const period = Math.min(
+                    600000,
+                    Math.max(1200, Number($('poll-interval').value) || 1500)
+                );
+
+                // First read starts immediately; subsequent reads only queue when idle.
+                readRegister('0000');
+
+                pollTimer = setInterval(() => {
+                    if (!activeRequest && requestQueue.length === 0) {
+                        readRegister('0000');
+                    }
+                }, period);
+
+                log('Polling temperature register 0000 every ' + period + ' ms', 'muted');
+            } else {
+                log('Polling stopped', 'muted');
+            }
+        });
+
+        document.querySelectorAll('.tab').forEach(button => {
+            button.addEventListener('click', () => activateTab(button.dataset.tab));
+        });
+
+        document.querySelectorAll('[data-tab-jump]').forEach(button => {
+            button.addEventListener('click', () => activateTab(button.dataset.tabJump));
+        });
+
+        function activateTab(name) {
+            document.querySelectorAll('.tab').forEach(button => {
+                button.classList.toggle('active', button.dataset.tab === name);
+            });
+
+            document.querySelectorAll('.panel').forEach(panel => {
+                panel.classList.toggle('active', panel.id === 'tab-' + name);
+            });
+
+            charts.forEach(chart => chart.resize());
+        }
+
+        document.querySelectorAll('[data-win]').forEach(button => {
+            button.addEventListener('click', () => {
+                chartWindow = Number(button.dataset.win);
+
+                document.querySelectorAll('[data-win]').forEach(other => {
+                    other.classList.toggle('active', other === button);
+                });
+
+                updateCharts();
+                updateStats();
+            });
+        });
+
+        $('clear-plot').addEventListener('click', () => {
+            samples.length = 0;
+            updateCharts();
+            updateStats();
+            $('chip-samples').textContent = '0 samples';
+            log('Temperature history cleared.', 'muted');
+        });
+
+        $('export-csv').addEventListener('click', () => {
+            const lines = [
+                'timestamp,temperature_c',
+                ...samples.map(p => new Date(p.x).toISOString() + ',' + p.y.toFixed(1))
+            ];
+
+            const blob = new Blob([lines.join('\n')], {type: 'text/csv;charset=utf-8'});
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+
+            a.href = url;
+            a.download = 'termodat-temperature.csv';
+            a.click();
+
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+        });
+
+        $('clear-log').addEventListener('click', () => {
+            $('terminal-log').textContent = '';
+        });
+
+        $('save-log').addEventListener('click', () => {
+            const blob = new Blob([$('terminal-log').innerText], {type: 'text/plain;charset=utf-8'});
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+
+            a.href = url;
+            a.download = 'termodat-modbus-log.txt';
+            a.click();
+
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+        });
+
+        // Keep both charts refreshed as time passes, even if no new reading arrives.
+        setInterval(() => {
+            updateClock();
+            updateCharts();
+            updateStats();
+        }, 1000);
+
+        updateClock();
+        updateBuilder();
+        updateStats();
+        connect();
+    })();
+</script>
+</body>
+</html>
