@@ -678,10 +678,10 @@
 
 <nav class="tabs" role="tablist">
     <button class="tab active" data-tab="dashboard"><span class="k">1</span>Dashboard</button>
-    <button class="tab" data-tab="plot"><span class="k">2</span>Plot</button>
-    <button class="tab" data-tab="terminal"><span class="k">3</span>Terminal</button>
-    <button class="tab" data-tab="registers"><span class="k">4</span>Registers</button>
-    <button class="tab" data-tab="program"><span class="k">5</span>Experiment program</button>
+    <button class="tab" data-tab="program"><span class="k">2</span>Experiment program</button>
+    <button class="tab" data-tab="plot"><span class="k">3</span>Plot</button>
+    <button class="tab" data-tab="terminal"><span class="k">4</span>Terminal</button>
+    <button class="tab" data-tab="registers"><span class="k">5</span>Registers</button>
     <button class="tab" data-tab="connection"><span class="k">6</span>Connection</button>
 </nav>
 
@@ -916,7 +916,7 @@
                     <tbody>
                     <tr>
                         <td>0000</td>
-                        <td>Temperature (confirmed from your register list)</td>
+                        <td>Temperature</td>
                         <td>0.1 °C</td>
                         <td>Read</td>
                         <td id="reg-temp">—</td>
@@ -926,8 +926,8 @@
                     </tr>
                     <tr>
                         <td>0173</td>
-                        <td>SP · target setpoint</td>
-                        <td>0.1 °C for thermocouple / RTD / pyrometer</td>
+                        <td>Temperature setpoint (not for program based usage)</td>
+                        <td>0.1 °C</td>
                         <td>Read / write</td>
                         <td id="reg-sp">—</td>
                         <td>
@@ -945,13 +945,83 @@
                         </td>
                     </tr>
                     <tr>
-                        <td>0030</td>
-                        <td>Other parameter (meaning not confirmed)</td>
-                        <td>Not assumed</td>
-                        <td>Read only here</td>
-                        <td id="reg-0030">—</td>
+                        <td>0160</td>
+                        <td>Program being edited / selected</td>
+                        <td>Program index (zero-based)</td>
+                        <td>Read / write</td>
+                        <td id="reg-0160">—</td>
                         <td>
-                            <button class="btn tiny" data-read="0030">Read</button>
+                            <button class="btn tiny" data-read="0160">Read</button>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>0161</td>
+                        <td>Step being edited / selected</td>
+                        <td>Step index (zero-based)</td>
+                        <td>Read / write</td>
+                        <td id="reg-0161">—</td>
+                        <td>
+                            <button class="btn tiny" data-read="0161">Read</button>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>0162</td>
+                        <td>Selected step type</td>
+                        <td>1 Hold · 2 - Jump · 3 - Stop · 5 - Heating · 6 - Cooling</td>
+                        <td>Read / write</td>
+                        <td id="reg-0162">—</td>
+                        <td>
+                            <button class="btn tiny" data-read="0162">Read</button>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>0163</td>
+                        <td>Selected step value</td>
+                        <td>Ramp rate · Hold time · Jump</td>
+                        <td>Read / write</td>
+                        <td id="reg-0163">—</td>
+                        <td>
+                            <button class="btn tiny" data-read="0163">Read</button>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>0164</td>
+                        <td>Selected step target</td>
+                        <td>0.1 °C</td>
+                        <td>Read / write</td>
+                        <td id="reg-0164">—</td>
+                        <td>
+                            <button class="btn tiny" data-read="0164">Read</button>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>0165</td>
+                        <td>Selected step transition</td>
+                        <td>0 Automatic · 1 Manual · 2 Measured temp</td>
+                        <td>Read / write</td>
+                        <td id="reg-0165">—</td>
+                        <td>
+                            <button class="btn tiny" data-read="0165">Read</button>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>017B</td>
+                        <td>Program to start</td>
+                        <td>Program index (zero-based)</td>
+                        <td>Read / write</td>
+                        <td id="reg-017B">—</td>
+                        <td>
+                            <button class="btn tiny" data-read="017B">Read</button>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>017C</td>
+                        <td>Step to start</td>
+                        <td>Step index (zero-based)</td>
+                        <td>Read / write</td>
+                        <td id="reg-017C">—</td>
+                        <td>
+                            <button class="btn tiny" data-read="017C">Read</button>
                         </td>
                     </tr>
                     </tbody>
@@ -986,6 +1056,9 @@
                 </div>
                 <div class="row wrap" style="margin-top:12px">
                     <button class="btn primary" id="save-program-file">Save to ESP32</button>
+                    <button class="btn" id="export-program-computer">Save to computer</button>
+                    <button class="btn" id="import-program-computer">Load from computer</button>
+                    <input type="file" id="program-computer-file" accept=".json,application/json" class="hidden">
                     <button class="btn" id="new-program">Clear editor</button>
                     <label class="checkline"><input type="checkbox" id="program-armed"> Application is running this
                         program (gate temperature polling)</label>
@@ -1016,7 +1089,7 @@
             </div>
         </div>
         <div class="card">
-            <div class="card-head"><h2>Steps</h2><span class="hint">Target: 0.1 °C units. Ramp rate: 0.1 °C/hour. Hold duration: minutes.</span>
+            <div class="card-head"><h2>Steps</h2><span class="hint">Target: °C (stored as 0.1 °C). Ramp rate: °C/hour (stored as 0.1 °C/hour). Hold duration: minutes.</span>
             </div>
             <div class="table-scroll">
                 <table class="program-table">
@@ -1024,7 +1097,7 @@
                     <tr>
                         <th>Step</th>
                         <th>Type</th>
-                        <th>Ramp / hold / jump value</th>
+                        <th>Ramp rate (°C/hour) / hold (min) / jump value</th>
                         <th>Target °C</th>
                         <th>Transition</th>
                         <th>Active</th>
@@ -1811,7 +1884,10 @@
         });
 
         $('read-state').addEventListener('click', readThree);
-        $('refresh-registers').addEventListener('click', readThree);
+        $('refresh-registers').addEventListener('click', () => {
+            ['0000', '0173', '0180', '0030', '0160', '0161', '0162', '0163', '0164', '0165', '017B', '017C']
+                .forEach(address => readRegister(address));
+        });
         $('test-temp').addEventListener('click', () => readRegister('0000'));
         $('reconnect').addEventListener('click', connect);
 
@@ -1886,8 +1962,13 @@
         const PROGRAM_API = '/api';
 
         const STEP_TYPES = [
-            [0, '0 · Heat/cool ramp'], [1, '1 · Hold'], [2, '2 · Jump'],
-            [3, '3 · Stop'], [4, '4 · Constant power'], [5, '5 · Heating'], [6, '6 · Cooling']
+            // [0, '0 · Heat/cool ramp'],
+            [1, '1 · Hold'],
+            [2, '2 · Jump'],
+            [3, '3 · Stop'],
+            // [4, '4 · Constant power'],
+            [5, '5 · Heating'],
+            [6, '6 · Cooling']
         ];
 
         function defaultStep(active = false) {
@@ -1915,7 +1996,7 @@
                 tr.innerHTML = `
                     <td>${i + 1} <span class="hint">(idx ${i})</span></td>
                     <td><select data-step="${i}" data-key="type">${types}</select></td>
-                    <td><input type="number" data-step="${i}" data-key="value" min="0" max="65535" step="1" value="${Number(step.value)}"></td>
+                    <td><input type="number" data-step="${i}" data-key="value" min="0" max="6553.5" step="${[0, 5, 6].includes(Number(step.type)) ? '0.1' : '1'}" value="${([0, 5, 6].includes(Number(step.type)) ? Number(step.value) / 10 : Number(step.value))}"></td>
                     <td><input type="number" data-step="${i}" data-key="target" min="-270" max="2500" step="0.1" value="${(Number(step.target) / 10).toFixed(1)}"></td>
                     <td><select data-step="${i}" data-key="transition">
                         <option value="0" ${Number(step.transition) === 0 ? 'selected' : ''}>0 · Automatic</option>
@@ -1930,11 +2011,15 @@
                     const i = Number(input.dataset.step), key = input.dataset.key;
                     if (key === 'active') workingProgram.steps[i][key] = input.checked;
                     else if (key === 'target') workingProgram.steps[i][key] = Math.round(Number(input.value) * 10);
-                    else workingProgram.steps[i][key] = Number(input.value);
+                    else if (key === 'value') {
+                        const isRamp = [0, 5, 6].includes(Number(workingProgram.steps[i].type));
+                        workingProgram.steps[i][key] = Math.round(Number(input.value) * (isRamp ? 10 : 1));
+                    } else workingProgram.steps[i][key] = Number(input.value);
                     workingProgram.name = $('program-name').value.trim();
                     workingProgram.programNumber = Number($('program-number').value);
                     updateProgramSummary();
-                    updateCharts();
+                    if (key === 'type') renderProgramSteps();
+                    else updateCharts();
                 });
             });
             updateProgramSummary();
@@ -2135,6 +2220,67 @@
             }
         }
 
+        function downloadProgramToComputer() {
+            const error = validateProgram();
+            if (error) {
+                programLog('Export blocked: ' + error);
+                return;
+            }
+            const name = $('program-name').value.trim() || 'experiment';
+            const body = {
+                format: 'termodat-experiment-program',
+                version: 1,
+                name,
+                programNumber: Number(workingProgram.programNumber),
+                steps: workingProgram.steps.map(step => ({
+                    type: Number(step.type),
+                    value: Number(step.value),
+                    target: Number(step.target),
+                    transition: Number(step.transition),
+                    active: !!step.active
+                }))
+            };
+            const blob = new Blob([JSON.stringify(body, null, 2)], {type: 'application/json'});
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = name + '.json';
+            a.click();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+            programLog('Exported "' + name + '" to a JSON file on this computer.');
+        }
+
+        async function loadProgramFromComputer(file) {
+            if (!file) return;
+            try {
+                const data = JSON.parse(await file.text());
+                if (!data || !Array.isArray(data.steps)) throw new Error('JSON does not contain a steps array.');
+                const candidate = {
+                    name: String(data.name || file.name.replace(/\\.json$/i, '')).slice(0, 48),
+                    programNumber: Number(data.programNumber) || 1,
+                    steps: Array.from({length: 10}, (_, i) => ({
+                        ...defaultStep(i === 0),
+                        ...(data.steps[i] || {})
+                    }))
+                };
+                const previous = workingProgram;
+                workingProgram = candidate;
+                const error = validateProgram();
+                if (error) {
+                    workingProgram = previous;
+                    throw new Error(error);
+                }
+                $('program-name').value = candidate.name;
+                $('program-number').value = candidate.programNumber;
+                renderProgramSteps();
+                programLog('Loaded "' + candidate.name + '" from computer into the editor. ESP32 and Thermodat are unchanged.');
+            } catch (e) {
+                programLog('Computer import failed: ' + e.message);
+            } finally {
+                $('program-computer-file').value = '';
+            }
+        }
+
         async function compareOrSyncProgram(doSync) {
             if (programOperationBusy) return;
             const error = validateProgram();
@@ -2229,6 +2375,10 @@
         });
         $('refresh-program-list').addEventListener('click', refreshProgramList);
         $('save-program-file').addEventListener('click', saveProgramFile);
+        $('export-program-computer').addEventListener('click', downloadProgramToComputer);
+        $('import-program-computer').addEventListener('click', () => $('program-computer-file').click());
+        $('program-computer-file').addEventListener('change', event =>
+            loadProgramFromComputer(event.target.files && event.target.files[0]));
         $('load-program-file').addEventListener('click', loadProgramFile);
         $('new-program').addEventListener('click', () => {
             workingProgram = createEmptyProgram();
