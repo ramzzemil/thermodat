@@ -1,5 +1,6 @@
 #include <Arduino.h>
 
+#include <mdns.h>
 #include <WiFi.h>
 #include <WebServer.h>
 #include <WebSocketsServer.h>
@@ -10,8 +11,8 @@
 // Wi-Fi configuration
 // =====================================================
 
-const char *ssid = "TECNO CAMON 30S Pro";
-const char *password = "2c6urddtnaeq56i";
+const char *ssid = "Thermodat";
+const char *password = "ThermodatPassword1151";
 
 #define LED_PIN 8
 
@@ -768,6 +769,28 @@ void webSocketEvent(
     }
 }
 
+void startMDNS() {
+    esp_err_t err = mdns_init();
+
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        Serial.printf("mDNS init failed: %s\n", esp_err_to_name(err));
+        return;
+    }
+
+    mdns_hostname_set("thermodat");
+    mdns_instance_name_set("Thermodat ESP32");
+
+    mdns_service_add(
+        "Thermodat Web Server",
+        "_http",
+        "_tcp",
+        80,
+        nullptr,
+        0
+    );
+
+    Serial.println("mDNS available at http://termodat.local");
+}
 
 // =====================================================
 // SETUP
@@ -826,43 +849,28 @@ void setup() {
     // Wi-Fi
     // -------------------------------------------------
 
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(ssid, password);
-
-    Serial.print("Connecting to WiFi");
-
     pinMode(LED_PIN, OUTPUT);
+    digitalWrite(LED_PIN, HIGH);
+    WiFi.mode(WIFI_AP);
+    if (WiFi.softAP(ssid, password)) {
+        Serial.println("Wi-Fi access point started!");
+        Serial.print("Network: ");
+        Serial.println(ssid);
+        Serial.print("Password: ");
+        Serial.println(password);
+        Serial.print("IP address: ");
+        Serial.println(WiFi.softAPIP());
 
-    int counter = 0;
+        // Start mDNS
+        startMDNS();
 
-    while (counter < WIFI_RECONNECT_ATTEMPTS &&
-           WiFi.status() != WL_CONNECTED) {
-        digitalWrite(LED_PIN, !digitalRead(LED_PIN));
-        delay(WIFI_RECONNECT_DELAY);
-
-        Serial.print(".");
-        counter++;
-    }
-
-    if (WiFi.status() != WL_CONNECTED) {
+        // AP is running
+        digitalWrite(LED_PIN, LOW);
+    } else {
+        Serial.println("Failed to start Wi-Fi access point!");
         digitalWrite(LED_PIN, HIGH);
-
-        Serial.println();
-        Serial.println("WiFi connection failed!");
-        Serial.println(
-            "Please restart ESP32-C3 after fixing the Wi-Fi connection."
-        );
-
         return;
     }
-
-    digitalWrite(LED_PIN, LOW);
-
-    Serial.println();
-    Serial.println("WiFi connected!");
-
-    Serial.print("ESP32 IP address: ");
-    Serial.println(WiFi.localIP());
 
     // -------------------------------------------------
     // HTTP routes
@@ -927,47 +935,34 @@ void setup() {
     Serial.println();
 }
 
-
 // =====================================================
 // MAIN LOOP
 // =====================================================
 
 void loop() {
-    // Keep the HTTP and WebSocket handlers running regularly.
+    // Keep HTTP and WebSocket handlers running
     server.handleClient();
     webSocket.loop();
 
-    // Process UART responses without blocking the main loop.
+    // Process Modbus responses
     serviceModbusRequest();
 
-    // Reconnect to Wi-Fi without a long blocking retry loop.
-    static unsigned long lastReconnectAttempt = 0;
-    static bool wasConnected = true;
+    // -------------------------------------------------
+    // Wi-Fi client status LED
+    // -------------------------------------------------
 
-    if (WiFi.status() == WL_CONNECTED) {
-        if (!wasConnected) {
-            wasConnected = true;
-            digitalWrite(LED_PIN, LOW);
+    static unsigned long lastBlink = 0;
 
-            Serial.println();
-            Serial.println("Wi-Fi connection reestablished.");
+    int connectedDevices = WiFi.softAPgetStationNum();
 
-            Serial.print("ESP32 IP address: ");
-            Serial.println(WiFi.localIP());
+    if (connectedDevices > 0) {
+        digitalWrite(LED_PIN, LOW);  // LED steady on (if active-low)
+    } else {
+        if (millis() - lastBlink >= 500) {
+            lastBlink = millis();
+
+            int currentLedValue = digitalRead(LED_PIN);
+            digitalWrite(LED_PIN, !currentLedValue);
         }
-
-        return;
-    }
-
-    if (wasConnected) {
-        wasConnected = false;
-        Serial.println("Wi-Fi connection lost.");
-    }
-
-    if (millis() - lastReconnectAttempt >= WIFI_RECONNECT_DELAY) {
-        lastReconnectAttempt = millis();
-
-        digitalWrite(LED_PIN, !digitalRead(LED_PIN));
-        WiFi.reconnect();
     }
 }

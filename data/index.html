@@ -1195,6 +1195,8 @@
 
         const samples = [];
         let programStartTime = null;
+        let programStartTemperature = null;
+        let fixedProgramProfile = [];
         let latestRegulationState = null;
         let workingProgram = null;
         let programOperationBusy = false;
@@ -1643,6 +1645,9 @@
         }
 
         function visibleSamples() {
+            return samples;
+
+            // could be used to filter only the recent data to be graphed
             const cutoff = Date.now() - chartWindow;
             return samples.filter(p => p.x >= cutoff);
         }
@@ -1685,7 +1690,6 @@
                     responsive: true,
                     maintainAspectRatio: false,
                     animation: false,
-                    normalized: true,
                     interaction: {intersect: false, mode: 'nearest'},
                     plugins: {
                         legend: {display: false},
@@ -1748,10 +1752,34 @@
 
         function updateCharts() {
             const data = visibleSamples();
-            const profile = buildProgramProfile();
+
             charts.forEach(chart => {
+                // Only update the live temperature dataset.
                 chart.data.datasets[0].data = data;
-                if (chart.data.datasets[1]) chart.data.datasets[1].data = profile;
+
+                // DO NOT assign, rebuild or modify dataset 1 here.
+                // The blue program profile is managed separately.
+
+                chart.update('none');
+            });
+        }
+
+        function setProgramChartProfile(profile) {
+            // Save a copy of the profile as the authoritative data.
+            fixedProgramProfile = profile.map(point =>
+                Object.freeze({
+                    x: point.x,
+                    y: point.y
+                })
+            );
+
+            // Update the blue dataset only when explicitly instructed.
+            charts.forEach(chart => {
+                chart.data.datasets[1].data = fixedProgramProfile.map(point => ({
+                    x: point.x,
+                    y: point.y
+                }));
+
                 chart.update('none');
             });
         }
@@ -1906,20 +1934,119 @@
             sendPayload('04060173' + hex, 'write SP ' + deg.toFixed(1) + ' °C');
         });
 
-        function writeRegState(value) {
-            const payload = '04060180' +
-                value.toString(16).toUpperCase().padStart(4, '0');
+        async function writeRegState(value) {
+            if (value !== 0 && value !== 1) return;
 
-            if (value === 0) {
-                programStartTime = null;
-            } else if (value === 1) {
-                programStartTime = Date.now();
+            if (!$('allow-writes').checked) {
+                log(
+                    'Regulation command blocked: enable write-safety acknowledgement first.',
+                    'err'
+                );
+                return;
             }
 
-            sendPayload(
-                payload,
-                'regulation ' + (value === 0 ? 'OFF' : value === 1 ? 'ON' : 'PAUSE')
-            );
+            const offButton = $('reg-off');
+            const onButton = $('reg-on');
+
+            offButton.disabled = true;
+            onButton.disabled = true;
+
+            const stateName = value === 1 ? 'ON' : 'OFF';
+
+            try {
+                let newStartTemperature = null;
+                let newStartTime = null;
+
+                // Capture a starting point only if this is a new run.
+                if (value === 1 && programStartTime === null) {
+                    log('Reading temperature for the program starting point...', 'muted');
+
+                    const tempResult = await readRegisterAsync('0000');
+
+                    if (!tempResult.ok || !Number.isFinite(tempResult.value)) {
+                        log('Cannot switch regulation ON: failed to read current temperature.', 'err');
+                        return;
+                    }
+
+                    newStartTemperature = signed16(tempResult.value) / 10;
+                    newStartTime = Date.now();
+
+                    log(
+                        'New starting temperature captured: ' +
+                        newStartTemperature.toFixed(1) + ' °C',
+                        'rx'
+                    );
+                } else if (value === 1) {
+                    log(
+                        'Existing program starting point retained: ' +
+                        programStartTemperature.toFixed(1) + ' °C',
+                        'muted'
+                    );
+                }
+
+                // Write Channel 1.
+                const ch1 = await writeRegisterAsync('0180', value);
+
+                // Write Channel 2.
+                const ch2 = await writeRegisterAsync('0580', value);
+
+                if (!ch1 || !ch2) {
+                    log(
+                        'Regulation ' + stateName +
+                        ' not confirmed on both channels. Channel 1: ' +
+                        (ch1 ? 'OK' : 'FAILED') +
+                        ', Channel 2: ' +
+                        (ch2 ? 'OK' : 'FAILED'),
+                        'err'
+                    );
+                    return;
+                }
+
+                if (value === 1) {
+                    // Set the starting point only once per run.
+                    if (programStartTime === null) {
+                        programStartTime = newStartTime;
+                        programStartTemperature = newStartTemperature;
+
+                        // Create the blue profile once, using the captured temperature.
+                        setProgramChartProfile(
+                            buildProgramProfile(
+                                programStartTime,
+                                programStartTemperature
+                            )
+                        );
+
+                        log(
+                            'Program starting point fixed at ' +
+                            programStartTemperature.toFixed(1) + ' °C.',
+                            'rx'
+                        );
+                    }
+                } else {
+                    // OFF ends the run and permits a new starting point next time.
+                    programStartTime = null;
+                    programStartTemperature = null;
+
+                    setProgramChartProfile([]);
+
+                    log('Program starting point cleared.', 'muted');
+                }
+
+                log(
+                    'Regulation ' + stateName +
+                    ' successfully written to both channels.',
+                    'rx'
+                );
+
+                updateCharts();
+
+            } catch (e) {
+                log('Regulation command failed: ' + e.message, 'err');
+
+            } finally {
+                offButton.disabled = false;
+                onButton.disabled = false;
+            }
         }
 
         $('reg-off').addEventListener('click', () => writeRegState(0));
@@ -2023,7 +2150,6 @@
                 });
             });
             updateProgramSummary();
-            updateCharts();
         }
 
         function updateProgramSummary() {
@@ -2033,51 +2159,66 @@
         }
 
 
-        function buildProgramProfile() {
-            if (!workingProgram || programStartTime === null) {
+        function buildProgramProfile(startTime, startTemperature) {
+            if (
+                !workingProgram ||
+                !Number.isFinite(startTime) ||
+                !Number.isFinite(startTemperature)
+            ) {
                 return [];
             }
 
             const activeSteps = workingProgram.steps.filter(step => step.active);
+
             if (activeSteps.length === 0) {
                 return [];
             }
 
-            let time = programStartTime;
+            let time = startTime;
+            let previous = startTemperature;
 
-            // Use the most recent measured temperature as the starting point.
-            let previous = samples.length
-                ? samples[samples.length - 1].y
-                : Number(activeSteps[0].target) / 10;
-
-            const points = [{x: time, y: previous}];
+            // This first point is the fixed starting point.
+            const points = [{
+                x: startTime,
+                y: startTemperature
+            }];
 
             for (const step of activeSteps) {
                 const type = Number(step.type);
                 const target = Number(step.target) / 10;
                 const value = Number(step.value);
 
-                // Stop or jump ends this simple projected profile.
                 if (type === 2 || type === 3) {
                     break;
                 }
 
                 if (type === 1) {
-                    // Hold: remain at the current temperature for value minutes.
+                    // Hold: remain at the previous temperature.
                     time += Math.max(1, value || 1) * 60000;
-                    points.push({x: time, y: previous});
+
+                    points.push({
+                        x: time,
+                        y: previous
+                    });
+
                 } else if ([0, 5, 6].includes(type)) {
-                    // Ramp: value is assumed to be in 0.1 °C/hour units.
+                    // Ramp rate is stored in tenths of °C/hour.
                     const rate = value * 0.1;
+
                     const duration = rate > 0
                         ? Math.abs(target - previous) / rate * 3600000
                         : 1000;
 
                     time += Math.max(1000, duration);
-                    points.push({x: time, y: target});
+
+                    points.push({
+                        x: time,
+                        y: target
+                    });
+
                     previous = target;
+
                 } else {
-                    // Unknown step type: avoid inventing a duration.
                     break;
                 }
             }
@@ -2283,27 +2424,51 @@
 
         async function compareOrSyncProgram(doSync) {
             if (programOperationBusy) return;
+
             const error = validateProgram();
             if (error) {
                 programLog('Operation blocked: ' + error);
                 return;
             }
+
             if (doSync && !$('allow-writes').checked) {
                 programLog('Sync blocked: enable the write-safety acknowledgement on Dashboard first.');
                 return;
             }
+
             programOperationBusy = true;
             $('read-device-program').disabled = $('sync-device-program').disabled = true;
-            $('program-match-chip').textContent = doSync ? 'Syncing…' : 'Reading…';
+            $('program-match-chip').textContent = doSync ? 'Syncing both channels…' : 'Reading both channels…';
             $('program-sync-log').textContent = '';
+
+            // Channel 1 has no offset; Channel 2 uses +0x0400.
+            const channels = [
+                {name: 'Channel 1', offset: 0x0000},
+                {name: 'Channel 2', offset: 0x0400}
+            ];
+
+            function channelAddress(baseAddress, offset) {
+                return (parseInt(baseAddress, 16) + offset)
+                    .toString(16)
+                    .toUpperCase()
+                    .padStart(4, '0');
+            }
+
             try {
                 const programNo = Number(workingProgram.programNumber) - 1;
-                if (!(await writeRegisterAsync('0160', programNo))) throw new Error('could not select program via 0160');
-                let allMatch = true, writes = 0;
+
+                // Program selector is shared by both channels.
+                if (!(await writeRegisterAsync('0160', programNo))) {
+                    throw new Error('Could not select program via shared register 0160.');
+                }
+
+                let allMatch = true;
+                let writes = 0;
+
                 const stepsToCompare = activeSteps();
                 const firstInactive = workingProgram.steps.findIndex(x => !x.active);
-                // Put a real Stop step at the first disabled row so an old longer
-                // program cannot continue through stale steps left in the controller.
+
+                // Add a Stop step to prevent stale steps from an older, longer program.
                 if (firstInactive >= 0) {
                     stepsToCompare.push({
                         ...defaultStep(false),
@@ -2313,42 +2478,128 @@
                         _terminator: true
                     });
                 }
+
                 for (const step of stepsToCompare) {
                     const i = step.index;
-                    if (!(await writeRegisterAsync('0161', i))) throw new Error('could not select step ' + (i + 1));
-                    const expected = {'0162': Number(step.type)};
+
+                    // Step selector is also shared.
+                    if (!(await writeRegisterAsync('0161', i))) {
+                        throw new Error('Could not select step ' + (i + 1) + ' via shared register 0161.');
+                    }
+
+                    const expected = {
+                        '0162': Number(step.type)
+                    };
+
                     const type = Number(step.type);
-                    if (!step._terminator && type !== 3) expected['0163'] = Number(step.value);
-                    if (!step._terminator && type !== 2 && type !== 3) expected['0164'] = Number(step.target);
-                    if (!step._terminator && [0, 1, 4, 5, 6].includes(type)) expected['0165'] = Number(step.transition);
-                    const actual = {};
-                    for (const address of Object.keys(expected)) {
-                        const r = await readRegisterAsync(address);
-                        if (!r.ok) throw new Error('read failed for ' + address + ' at step ' + (i + 1));
-                        actual[address] = r.value;
+
+                    if (!step._terminator && type !== 3) {
+                        expected['0163'] = Number(step.value);
                     }
-                    const differences = Object.keys(expected).filter(a => actual[a] !== (expected[a] & 0xffff));
-                    if (differences.length) allMatch = false;
-                    if (doSync) {
-                        for (const address of differences) {
-                            if (!(await writeRegisterAsync(address, expected[address]))) throw new Error('write failed for ' + address + ' at step ' + (i + 1));
-                            writes++;
-                            const check = await readRegisterAsync(address);
-                            if (!check.ok || check.value !== (expected[address] & 0xffff))
-                                throw new Error('verification failed for ' + address + ' at step ' + (i + 1));
+
+                    if (!step._terminator && type !== 2 && type !== 3) {
+                        expected['0164'] = Number(step.target);
+                    }
+
+                    if (!step._terminator && [0, 1, 4, 5, 6].includes(type)) {
+                        expected['0165'] = Number(step.transition);
+                    }
+
+                    // Read, compare, and if requested write each channel's step data.
+                    for (const channel of channels) {
+                        const differences = [];
+
+                        for (const baseAddress of Object.keys(expected)) {
+                            const address = channelAddress(baseAddress, channel.offset);
+                            const result = await readRegisterAsync(address);
+
+                            if (!result.ok) {
+                                throw new Error(
+                                    'Read failed for ' + channel.name +
+                                    ', register ' + address +
+                                    ', step ' + (i + 1)
+                                );
+                            }
+
+                            if (result.value !== (expected[baseAddress] & 0xFFFF)) {
+                                differences.push({
+                                    address,
+                                    expected: expected[baseAddress]
+                                });
+                            }
                         }
+
+                        if (differences.length) {
+                            allMatch = false;
+                        }
+
+                        if (doSync) {
+                            for (const difference of differences) {
+                                const written = await writeRegisterAsync(
+                                    difference.address,
+                                    difference.expected
+                                );
+
+                                if (!written) {
+                                    throw new Error(
+                                        'Write failed for ' + channel.name +
+                                        ', register ' + difference.address +
+                                        ', step ' + (i + 1)
+                                    );
+                                }
+
+                                writes++;
+
+                                // Read back every changed register to verify it.
+                                const check = await readRegisterAsync(difference.address);
+
+                                if (!check.ok ||
+                                    check.value !== (difference.expected & 0xFFFF)) {
+                                    throw new Error(
+                                        'Verification failed for ' + channel.name +
+                                        ', register ' + difference.address +
+                                        ', step ' + (i + 1)
+                                    );
+                                }
+                            }
+                        }
+
+                        programLog(
+                            channel.name + ' · Step ' + (i + 1) + ': ' +
+                            (differences.length
+                                ? differences.length + ' difference(s)' +
+                                (doSync ? ' updated and verified' : ' found')
+                                : 'matches')
+                        );
                     }
-                    programLog('Step ' + (i + 1) + ': ' + (differences.length ? 'differences ' + differences.join(', ') + (doSync ? ' updated and verified' : '') : 'matches'));
                 }
-                $('program-match-chip').textContent = doSync ? ('Sync verified · ' + writes + ' writes') : (allMatch ? 'All active steps match' : 'Differences found');
-                if (doSync) programLog('Sync complete: ' + writes + ' differing register values written and read-back verified.');
-                else programLog(allMatch ? 'Thermodat matches all active editor steps.' : 'Thermodat differs from editor steps.');
+
+                $('program-match-chip').textContent = doSync
+                    ? 'Both channels synced · ' + writes + ' writes'
+                    : (allMatch
+                        ? 'Both channels match'
+                        : 'Differences found');
+
+                if (doSync) {
+                    programLog(
+                        'Sync complete. Both channels checked; ' +
+                        writes + ' differing register values written and verified.'
+                    );
+                } else {
+                    programLog(
+                        allMatch
+                            ? 'Both channels match all active editor steps.'
+                            : 'Differences found between the editor and one or both channels.'
+                    );
+                }
+
             } catch (e) {
                 $('program-match-chip').textContent = 'Check failed';
                 programLog('ERROR: ' + e.message);
             } finally {
                 programOperationBusy = false;
-                $('read-device-program').disabled = $('sync-device-program').disabled = false;
+                $('read-device-program').disabled = false;
+                $('sync-device-program').disabled = false;
             }
         }
 
